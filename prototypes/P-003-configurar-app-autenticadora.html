@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Protege tu cuenta · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.auth-card{max-width:32rem}
+#enroll .btn-primary{width:100%}
+.steps h2{margin:0;font-size:1.125rem}
+.steps section{display:flex;flex-direction:column;gap:var(--space-2)}
+.steps p{margin:0}
+.qr{width:200px;height:200px;background:#fff;border:1px solid var(--color-border);padding:8px;box-sizing:content-box}
+.secret{font-family:var(--font-family-mono);font-size:1.25rem;letter-spacing:.05em;user-select:all;word-break:break-word}
+.code-input{width:12rem;max-width:100%;font-family:var(--font-family-mono);font-size:1.5rem;letter-spacing:.25em;text-align:left}
+.enroll-notes{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.proto-x{margin-top:var(--space-2)}
+.proto-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;margin-top:var(--space-2)}
+.proto-info{color:var(--proto-muted);margin:var(--space-2) 0 0;max-width:52rem}
+.proto-info b{color:var(--proto-fg);font-family:var(--font-family-mono)}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-003 · Configurar la app autenticadora — 09-ui-spec.md §3.1. Flujo F2 (paso 2a).
+// Reglas: RN-008 y RN-140 (enrolamiento obligatorio antes de crear la sesión, sin "más tarde"), PRINCIPIO-005. Éxito → P-004 (RN-112).
+(function () {
+  const { ICON, rn, alert, fieldError, esc, store } = CH;
+  const SECRET = 'JBSW Y3DP EHPK 3PXP';            // secreto TOTP de la demo, agrupado de 4 en 4
+  const TOTP = '482913';                             // código que hoy muestra la app autenticadora (demo)
+  const MSG = {
+    format: 'Escribe los 6 dígitos del código, sin espacios ni letras.',
+    wrong: 'Ese código no coincide. Escribe el código que muestra ahora tu app autenticadora.'
+  };
+
+  let status = null;         // { kind:'format'|'wrong', value }
+  let focusInput = true;
+
+  // QR ficticio y determinista (no codifica el secreto)
+  function qr() {
+    const n = 25, s = 8; let cells = '', seed = 7;
+    const finder = (x, y) => [[0, 0], [n - 7, 0], [0, n - 7]].find(([a, b]) => x >= a - 1 && x <= a + 7 && y >= b - 1 && y <= b + 7);
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      const f = finder(x, y), fx = f && x - f[0], fy = f && y - f[1];
+      const on = f ? (fx >= 0 && fx <= 6 && fy >= 0 && fy <= 6 && Math.min(fx, fy, 6 - fx, 6 - fy) !== 1) : (seed >> 16) % 2 === 0;
+      if (on) cells += `<rect x="${x * s}" y="${y * s}" width="${s}" height="${s}"/>`;
+    }
+    return `<svg class="qr" viewBox="0 0 ${n * s} ${n * s}" role="img" aria-label="Código QR para agregar CondoHub a tu app autenticadora"><g fill="#111">${cells}</g></svg>`;
+  }
+
+  function view(c) {
+    const st = c.state;
+    if (st === 'error') { c.title = 'Algo salió mal'; return errorView(); }
+    c.title = 'Protege tu cuenta';
+    const s = status || (st === 'wrong' ? { kind: 'wrong', value: '' } : st === 'format' ? { kind: 'format', value: '4829' } : null);
+    const busy = st === 'loading';
+    const value = s ? s.value : (st === 'data' || busy ? TOTP : '');
+    const described = ['code-hint', s ? 'code-error' : ''].filter(Boolean).join(' ');
+
+    let h = `<h1 class="page">Protege tu cuenta</h1>
+      <p style="margin:0">Tu rol exige un segundo paso al iniciar sesión.</p>`;
+    if (s) h += alert('danger', 'Revisa el código antes de continuar',
+      `<ul><li><a href="#code" data-focus="code">${MSG[s.kind]}</a></li></ul>` +
+      rn(s.kind === 'wrong' ? 'POST /api/auth/mfa/enroll · código incorrecto: error en el campo; el QR y la clave se mantienen · texto provisional, sin código en §3.0.6'
+                            : 'Validación de formato (pattern) · no se envía al servidor'), 'alert');
+    if (busy) h += `<p class="rn always">SSR: no hay estado de carga en el cliente. 🧩 JS opcional: el botón pasa a "Enviando…" (aria-disabled) para evitar dobles envíos.</p>`;
+
+    h += `<div class="steps" style="display:flex;flex-direction:column;gap:var(--space-6)">
+      <section aria-labelledby="s1"><h2 id="s1">1. Instala una app autenticadora</h2>
+        <p>Por ejemplo, Microsoft Authenticator o Google Authenticator.</p></section>
+      <section aria-labelledby="s2"><h2 id="s2">2. Agrega CondoHub</h2>
+        ${qr()}
+        <p>¿No puedes escanear? Escribe esta clave en la app:</p>
+        <code class="secret">${SECRET}</code>
+        ${rn('Pendiente §6 #8: la librería del QR no está aprobada (PRINCIPIO-009.4); sin ella la pantalla funciona solo con la clave en texto')}</section>
+      <section aria-labelledby="s3"><h2 id="s3">3. Escribe el código</h2>
+        <form class="form" id="enroll" method="post" action="/api/auth/mfa/enroll" novalidate>
+          <div class="field"><label for="code">Código de 6 dígitos <span class="req">(obligatorio)</span></label>
+            <p class="hint" id="code-hint">Lo muestra tu app autenticadora y cambia cada 30 segundos.</p>
+            <input class="input code-input" id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="\\d{6}" required aria-describedby="${described}"${s ? ' aria-invalid="true"' : ''} value="${esc(value)}">
+            ${s ? `<div id="code-error">${fieldError(MSG[s.kind])}</div>` : ''}</div>
+          <button class="btn btn-primary" type="submit"${busy ? ' aria-disabled="true"' : ''}>${busy ? 'Enviando…' : 'Activar verificación'}</button>
+        </form></section>
+    </div>
+    <div class="enroll-notes">${rn('RN-140 · sin opción "más tarde" ni salida a otro condominio: la sesión no se crea hasta enrolar')}
+      ${rn('RN-008 · aplica si tiene Administrator o BoardMember en cualquier condominio')}${rn('Éxito → P-004 (RN-112)')}</div>`;
+    return h;
+  }
+
+  function errorView() {
+    return `<div class="page-state">${ICON.big}<h1 class="page">Algo salió mal</h1>
+      <p style="margin:0">Algo salió mal. Inténtalo de nuevo en unos minutos.</p>
+      <p class="muted">Si el problema continúa, comparte este código con la administración: <span class="trace">00-5a1c93e04b7d4f28a6e2d1c0b97f3a61-7e2b4c19a0d35f88-01</span></p>
+      <button class="btn btn-primary" type="button" data-retry>Volver a intentar</button>${rn('§3.0.4 · error inesperado 500 con traceId')}</div>`;
+  }
+
+  function attempt(btn, raw) {
+    const v = raw.trim().replace(/\s+/g, '');
+    if (!/^\d{6}$/.test(v)) { status = { kind: 'format', value: raw }; return ctx.rerender(); }
+    if (v !== TOTP) { status = { kind: 'wrong', value: '' }; return ctx.rerender(); }
+    status = null;
+    btn.removeAttribute('aria-disabled'); btn.textContent = 'Activar verificación';
+    store.set('p004-shown', '');                                         // enrolamiento nuevo: P-004 muestra los códigos una vez
+    CH.go('P-004');
+  }
+
+  const ctx = CH.init({
+    code: 'P-003', title: 'Configurar la app autenticadora', shell: 'auth', roleLabel: 'Quién inicia sesión',
+    roles: ['marco', 'rosa'],
+    states: [['empty', 'Inicial (vacío)'], ['data', 'Con datos'], ['wrong', 'Código incorrecto'], ['format', 'Formato inválido'],
+             ['loading', 'Cargando'], ['error', 'Error']],
+    route: () => '/sign-in/mfa/enroll',
+    extraControls: `<div class="proto-actions">
+        <button class="proto-btn" id="fill" type="button">Autocompletar código válido</button>
+      </div>
+      <p class="proto-info">Código TOTP válido ahora: <b>${TOTP}</b>. Se llega aquí desde P-001 con nextStep <b>MfaEnrollmentRequired</b> (Administrator o BoardMember sin TOTP).</p>`,
+    render: view,
+    afterRender(c) {
+      if (focusInput && ['empty', 'data'].includes(c.state) && !status) { const el = document.getElementById('code'); if (el) el.focus(); }
+      focusInput = false;
+    }
+  });
+
+  document.addEventListener('submit', e => {
+    const f = e.target.closest('#enroll'); if (!f) return;
+    e.preventDefault();
+    const btn = f.querySelector('button[type="submit"]');
+    if (btn.getAttribute('aria-disabled') === 'true') return;
+    CH.sending(btn, 700, () => attempt(btn, f.code.value));
+  });
+
+  document.addEventListener('click', e => {
+    const t = e.target;
+    const fl = t.closest('[data-focus]');
+    if (fl) { e.preventDefault(); const el = document.getElementById(fl.dataset.focus); if (el) { el.focus(); el.select(); } return; }
+    if (t.closest('[data-retry]')) {
+      document.getElementById('ch-st-empty').checked = true; ctx.state = 'empty'; status = null; focusInput = true; ctx.rerender(true);
+    } else if (t.id === 'fill') {
+      const el = document.getElementById('code'); if (el) { el.value = TOTP; document.querySelector('#enroll button').focus(); }
+    }
+  });
+
+  document.addEventListener('change', e => { if (e.target.id === 'ch-role' || e.target.name === 'ch-st') { status = null; focusInput = true; } }, true);
+})();
+</script>
+</body>
+</html>

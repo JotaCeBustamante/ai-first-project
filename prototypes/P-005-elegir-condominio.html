@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Elegir condominio · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+#condo .btn-primary{width:100%}
+.condo-list{display:flex;flex-direction:column;gap:var(--space-3);border:0;margin:0;padding:0}
+.condo-opt{display:flex;align-items:center;gap:var(--space-3);min-height:56px;padding:0 var(--space-4);border:1px solid var(--color-border);border-radius:var(--radius-md);cursor:pointer;font-weight:600}
+.condo-opt input{width:22px;height:22px;margin:0;flex:none;accent-color:var(--color-primary)}
+.condo-opt:has(input:checked){border:2px solid var(--color-primary);padding:0 calc(var(--space-4) - 1px)}
+.condo-notes{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.proto-x{margin-top:var(--space-2)}
+.proto-info{color:var(--proto-muted);margin:var(--space-2) 0 0;max-width:52rem}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-005 · Elegir condominio — 09-ui-spec.md §3.1. Flujos F2 (paso 3) y F13 (paso 2).
+// Reglas: RN-064 (elegir después de contraseña y TOTP, antes de crear la sesión; sin condominio por defecto), RN-010 y RN-070 (consentimiento por condominio).
+(function () {
+  const { ICON, rn, alert, fieldError, esc, store } = CH;
+  const CONDOS = [{ id: 'c-olivos', name: 'Residencial Los Olivos' }, { id: 'c-parque', name: 'Torres del Parque' }];
+  // Consentimiento vigente aceptado por condominio (demo): Torres del Parque es la primera vez → P-007 (HU-002B)
+  const CONSENTED = { 'c-olivos': true, 'c-parque': false };
+  const MSG_PICK = 'Elige un condominio.';
+
+  let status = null;         // { kind:'none' }
+
+  function view(c) {
+    const st = c.state;
+    if (st === 'error') { c.title = 'Algo salió mal'; return errorView(); }
+    c.title = '¿A qué condominio quieres entrar?';
+    const err = status || (st === 'none' ? { kind: 'none' } : null);
+    const busy = st === 'loading';
+
+    let h = `<h1 class="page" id="h1">¿A qué condominio quieres entrar?</h1>`;
+    if (err) h += alert('danger', 'Revisa antes de continuar',
+      `<ul><li><a href="#condo-${CONDOS[0].id}" data-focus="condo-${CONDOS[0].id}">${MSG_PICK}</a></li></ul>`, 'alert');
+    if (busy) h += `<p class="rn always">SSR: no hay estado de carga en el cliente. 🧩 JS opcional: el botón pasa a "Enviando…" (aria-disabled).</p>`;
+    h += `<form class="form" id="condo" method="post" action="/api/auth/condominium" novalidate>
+      <fieldset class="condo-list field"${err ? ' aria-describedby="condo-error"' : ''}>
+        <legend class="sr-only">Condominio</legend>
+        ${CONDOS.map((x, i) => `<label class="condo-opt" for="condo-${x.id}"><input type="radio" name="condominiumId" id="condo-${x.id}" value="${x.id}" required${busy && i === 0 ? ' checked' : ''}>${esc(x.name)}</label>`).join('')}
+        ${err ? `<div id="condo-error">${fieldError(MSG_PICK)}</div>` : ''}
+      </fieldset>
+      <button class="btn btn-primary" type="submit"${busy ? ' aria-disabled="true"' : ''}>${busy ? 'Enviando…' : 'Continuar'}</button>
+    </form>
+    <div class="condo-notes">${rn('RN-064 · ningún condominio viene elegido por defecto · se elige después del TOTP y antes de crear la sesión')}
+      ${rn('Si tiene un solo condominio, esta pantalla no se muestra')}
+      ${rn('Éxito: P-007 si falta el consentimiento vigente de ese condominio (RN-010, RN-070); si no, returnUrl o P-010')}</div>`;
+    return h;
+  }
+
+  function errorView() {
+    return `<div class="page-state">${ICON.big}<h1 class="page">Algo salió mal</h1>
+      <p style="margin:0">Algo salió mal. Inténtalo de nuevo en unos minutos.</p>
+      <p class="muted">Si el problema continúa, comparte este código con la administración: <span class="trace">00-1e7b40c3d95a4f62a8b0e3d1f6c2a974-9b3e5d0a1c7f2468-01</span></p>
+      <button class="btn btn-primary" type="button" data-retry>Volver a intentar</button>${rn('§3.0.4 · error inesperado 500 con traceId')}</div>`;
+  }
+
+  function next(btn, id) {
+    btn.removeAttribute('aria-disabled'); btn.textContent = 'Continuar';
+    store.set('condo-v1', CONDOS.find(x => x.id === id).name);           // P-007 muestra el condominio elegido
+    const forced = document.getElementById('next').value;
+    const consent = forced === 'auto' ? !CONSENTED[id] : forced === 'ConsentRequired';
+    if (consent) return CH.go('P-007');
+    CH.finishSignIn();
+  }
+
+  const ctx = CH.init({
+    code: 'P-005', title: 'Elegir condominio', shell: 'auth', roleLabel: 'Quién inicia sesión',
+    roles: ['luis', 'ana', 'marco'],
+    states: [['empty', 'Inicial (sin elección)'], ['none', 'Sin elegir'], ['loading', 'Cargando'], ['error', 'Error']],
+    route: () => '/sign-in/condominium',
+    extraControls: `<div class="proto-x"><label for="next">Siguiente paso tras elegir (nextStep)</label>
+        <select id="next">
+          <option value="auto">Según el condominio (Torres del Parque: primera vez → P-007)</option>
+          <option value="SignedIn">SignedIn → returnUrl o P-010</option>
+          <option value="ConsentRequired">ConsentRequired → P-007</option>
+        </select></div>
+      <p class="proto-info">Demo: las tres personas tienen vínculos o roles en los dos condominios (ejemplos de RN-064 y RN-122). Marco llega aquí después de P-002.</p>`,
+    render: view
+  });
+
+  document.addEventListener('submit', e => {
+    const f = e.target.closest('#condo'); if (!f) return;
+    e.preventDefault();
+    const btn = f.querySelector('button[type="submit"]');
+    if (btn.getAttribute('aria-disabled') === 'true') return;
+    const pick = f.querySelector('input[name="condominiumId"]:checked');
+    if (!pick) { status = { kind: 'none' }; return ctx.rerender(); }
+    status = null;
+    CH.sending(btn, 600, () => next(btn, pick.value));
+  });
+
+  document.addEventListener('click', e => {
+    const t = e.target;
+    const fl = t.closest('[data-focus]');
+    if (fl) { e.preventDefault(); const el = document.getElementById(fl.dataset.focus); if (el) el.focus(); return; }
+    if (t.closest('[data-retry]')) { document.getElementById('ch-st-empty').checked = true; ctx.state = 'empty'; status = null; ctx.rerender(true); }
+  });
+
+  document.addEventListener('change', e => { if (e.target.id === 'ch-role' || e.target.name === 'ch-st') status = null; }, true);
+})();
+</script>
+</body>
+</html>

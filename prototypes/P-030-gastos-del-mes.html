@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gastos del condominio · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:var(--space-3) var(--space-4)}
+.month-row{display:flex;flex-wrap:wrap;gap:var(--space-3);align-items:flex-end}
+.month-row .input{flex:1 1 12rem;max-width:18rem}
+.monthnav{display:flex;flex-wrap:wrap;justify-content:space-between;gap:var(--space-2) var(--space-4)}
+.monthnav a{min-height:44px;display:inline-flex;align-items:center;font-weight:600}
+.monthnav .next{margin-left:auto}
+/* Totales: se mantiene como tabla también en móvil (solo 2 columnas) */
+table.tot{width:100%;max-width:32rem;border-collapse:collapse;background:var(--color-surface);border:1px solid var(--color-border-subtle)}
+table.tot th,table.tot td{padding:var(--space-3) var(--space-4);text-align:left;border-bottom:1px solid var(--color-border-subtle)}
+table.tot thead th{background:var(--color-surface-alt);font-weight:600}
+table.tot tbody th{font-weight:400}
+table.tot .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+table.tot tfoot th,table.tot tfoot td{font-weight:700;border-top:2px solid var(--color-border);border-bottom:0}
+.desc{display:flex;flex-direction:column;gap:var(--space-1);align-items:flex-start}
+.desc a{font-weight:600}
+.void{display:inline-flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);font-weight:600;color:var(--color-danger)}
+table.dt td.amt-void{color:var(--color-text-muted)}
+@container shell (max-width:37.49em){.desc{align-items:flex-end;text-align:right}.void{justify-content:flex-end}}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script src="assets/expenses-data.js"></script>
+<script>
+// P-030 · Gastos del mes — 09-ui-spec.md §3.5. Flujos F7 (pasos 1–3, E) y F6 (paso 1).
+// Reglas: RN-035, RN-090, RN-036, RN-142, RN-143, RN-015/RN-016/RN-105.
+(function () {
+  const { TODAY, ICON, rn, alert, money, fmtDate, esc, fieldError } = CH;
+  const CUR = TODAY.slice(0, 7);                // mes actual: 2026-11
+  const { MONTHS, CATS, CAT } = EXP;
+  // Gastos: assets/expenses-data.js (una sola fuente con P-031…P-034), con lo registrado, anulado o vinculado en la sesión
+  // ('ch:exp-session-v1') y solo los que existen a la fecha simulada (CH.TODAY + CH.NOW).
+
+  const valid = m => /^\d{4}-(0[1-9]|1[0-2])$/.test(m || '');
+  const monthName = m => { const [y, mm] = m.split('-'); return MONTHS[Number(mm) - 1] + ' ' + y; };
+  const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+  const shift = (m, d) => {
+    let [y, mm] = m.split('-').map(Number); mm += d;
+    if (mm < 1) { mm = 12; y--; } else if (mm > 12) { mm = 1; y++; }
+    return y + '-' + String(mm).padStart(2, '0');
+  };
+
+  // ?month= de la URL: sin month → mes actual; formato inválido o mes futuro → mes actual + Alert info
+  const q = CH.params().get('month');
+  let month = CUR, invalidNote = false, monthErr = null, typed = '';
+  if (q != null) { if (valid(q) && q <= CUR) month = q; else invalidNote = true; }
+
+  const row = e => `<tr>
+      <td data-label="Fecha"><time datetime="${e.date}" class="tnum">${fmtDate(e.date)}</time></td>
+      <td data-label="Descripción"><div class="desc">
+        <a href="#" data-go="P-031" data-params="id=${e.id}">${esc(e.desc)}</a>
+        ${e.voided ? `<span class="void">${CH.badge('danger', 'Anulado')}<span>No suma al total</span></span>` : ''}
+        <span class="muted">registrado el <time datetime="${e.reg}" class="tnum">${fmtDate(e.reg)}</time></span></div></td>
+      <td data-label="Categoría">${CAT[e.cat]}</td>
+      <td data-label="Proveedor">${esc(e.sup)}</td>
+      <td data-label="Monto" class="num${e.voided ? ' amt-void' : ''}">${money(e.amount)}</td></tr>`;
+
+  function renderData(c) {
+    const p = c.persona;
+    const m = c.state === 'invalid' ? CUR : month;
+    const name = monthName(m), prev = shift(m, -1), next = shift(m, 1);
+    // RN-143: el mes se toma de la fecha del gasto, no de la fecha de registro
+    const list = c.state === 'empty' ? [] : EXP.all().filter(e => e.date.slice(0, 7) === m)
+      .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+
+    let h = `<div class="head"><h1 class="page">Gastos del condominio</h1>` +
+      (p.admin ? `<a href="#" class="btn btn-primary btn-sm" data-go="P-032">Registrar gasto</a>` : '') + `</div>` +
+      rn(p.admin ? 'Solo Administrator · "Registrar gasto" → P-032 (F6 paso 1)' : 'RN-015/RN-016/RN-105 · CanViewCondominiumFinancials evaluada en cada request');
+    if (c.state === 'invalid' || invalidNote)
+      h += alert('info', 'Mostramos el mes actual.', '<p>El mes indicado en la dirección no es válido.</p>', 'status');
+
+    const v = monthErr ? typed : m;
+    h += `<div class="sec">
+      <form data-month-form novalidate><div class="field"><label for="month">Mes</label>
+        <div class="month-row"><input class="input" type="month" id="month" name="month" value="${esc(v)}" max="${CUR}"${monthErr ? ' aria-invalid="true" aria-describedby="month-err"' : ''}>
+        <button class="btn btn-secondary" type="submit">Ver</button></div>
+        ${monthErr ? `<div id="month-err">${fieldError(monthErr)}</div>` : ''}</div></form>
+      <nav class="monthnav" aria-label="Cambiar de mes">
+        <a href="?month=${prev}" data-month="${prev}"><span aria-hidden="true">←&nbsp;</span>${cap(monthName(prev))}<span class="sr-only"> (mes anterior)</span></a>
+        ${m < CUR ? `<a class="next" href="?month=${next}" data-month="${next}">${cap(monthName(next))}<span class="sr-only"> (mes siguiente)</span><span aria-hidden="true">&nbsp;→</span></a>` : ''}
+      </nav>${rn('Sin enlace al mes siguiente después del mes actual')}</div>`;
+
+    if (!list.length) {
+      h += `<section class="sec" aria-labelledby="h-empty"><h2 id="h-empty" class="sr-only">Gastos de ${name}</h2>
+        <div class="empty">${ICON.doc}<p class="muted">No hay gastos registrados para este mes.</p></div>${rn('RN-035 · mes vacío: sin tablas ni totales')}</section>`;
+      return `<div class="content">${h}</div>`;
+    }
+
+    // RN-142: los anulados no suman. Se suma en céntimos para evitar errores de redondeo.
+    const active = list.filter(e => !e.voided);
+    const tot = CATS.map(([k, t]) => [t, active.filter(e => e.cat === k).reduce((s, e) => s + Math.round(e.amount * 100), 0)]);
+    const total = tot.reduce((s, x) => s + x[1], 0);
+
+    h += `<section class="sec" aria-labelledby="h-tot"><h2 id="h-tot">Totales de ${name}</h2>
+      <table class="tot"><caption class="sr-only">Totales por categoría de ${name}, sin gastos anulados</caption>
+        <thead><tr><th scope="col">Categoría</th><th scope="col" class="num">Total</th></tr></thead>
+        <tbody>${tot.map(([t, cents]) => `<tr><th scope="row">${t}</th><td class="num">${money(cents / 100)}</td></tr>`).join('')}</tbody>
+        <tfoot><tr><th scope="row">Total del mes</th><td class="num">${money(total / 100)}</td></tr></tfoot></table>
+      ${rn('RN-035 · total por categoría · RN-142 · sin anulados · RN-143 · por fecha del gasto · Q27: categorías provisionales · incluye lo registrado, anulado o vinculado en la sesión (exp-session-v1) y solo lo registrado hasta ' + fmtDate(TODAY) + ' ' + CH.NOW)}</section>`;
+
+    h += `<section class="sec" aria-labelledby="h-det"><h2 id="h-det">Detalle (${list.length} ${list.length === 1 ? 'gasto' : 'gastos'})</h2>
+      <div class="table-wrap"><table class="dt"><caption class="sr-only">Gastos de ${name}. La descripción abre el detalle del gasto.</caption>
+        <thead><tr><th scope="col">Fecha</th><th scope="col">Descripción</th><th scope="col">Categoría</th><th scope="col">Proveedor</th><th scope="col" class="num">Monto</th></tr></thead>
+        <tbody>${list.map(row).join('')}</tbody></table></div>
+      ${rn('RN-090 · monto, fecha, categoría y proveedor; el comprobante se descarga en P-031')}
+      ${rn('RN-036 · sin unidades, personas ni deudas en vistas financieras')}
+      ${rn('Pagination · 20 por página; con una sola página no se muestra')}</section>`;
+    return `<div class="content">${h}</div>`;
+  }
+
+  const ctx = CH.init({
+    code: 'P-030', title: 'Gastos del mes',
+    roles: ['ana', 'luis', 'marco', 'rosa', 'carla'],
+    states: [['data', 'Con datos'], ['empty', 'Vacío'], ['loading', 'Cargando'], ['error', 'Error'],
+             ['invalid', 'Mes inválido'], ['denied', 'Sin acceso (vínculo vencido)']],
+    extraControls: EXP.scenarioControls(),
+    route: c => c.state === 'invalid' ? '/expenses?month=2026-13' : `/expenses?month=${month}&page=1`,
+    render(c) {
+      // RN-015/RN-016: sin vínculo Owner vigente (Carla, inquilina; o propietario con vínculo vencido) → P-090
+      if (!c.persona.fin || c.state === 'denied') { c.title = 'No tienes acceso a esta página'; return CH.deniedView(); }
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      c.title = 'Gastos del condominio';
+      return renderData(c);
+    }
+  });
+
+  function setMonth(m) {
+    month = m; invalidNote = false; monthErr = null;
+    if (ctx.state === 'invalid') { document.getElementById('ch-st-data').checked = true; ctx.state = 'data'; }
+    try { const u = new URLSearchParams(location.search); u.set('month', m); history.replaceState(null, '', '?' + u); } catch (err) { }
+    ctx.rerender(true);
+  }
+
+  // Enlaces mes anterior / siguiente (en la app real son GET ?month=)
+  document.addEventListener('click', e => {
+    const a = e.target.closest('a[data-month]'); if (!a) return;
+    e.preventDefault(); setMonth(a.dataset.month);
+  });
+  // Formulario GET "Mes" + [Ver] con validación
+  document.addEventListener('submit', e => {
+    const f = e.target.closest('form[data-month-form]'); if (!f) return;
+    e.preventDefault();
+    const v = f.querySelector('#month').value.trim();
+    if (!v) monthErr = 'Elige un mes.';
+    else if (!valid(v)) monthErr = 'Escribe el mes con el formato AAAA-MM. Ejemplo: 2026-11.';
+    else if (v > CUR) monthErr = `Elige un mes hasta ${monthName(CUR)}.`;
+    else { setMonth(v); return; }
+    typed = v; ctx.rerender();
+    document.getElementById('month').focus();
+  });
+  document.addEventListener('change', e => { if (e.target.id === 'ch-role' || e.target.name === 'ch-st') { monthErr = null; invalidNote = false; } }, true);
+})();
+</script>
+</body>
+</html>

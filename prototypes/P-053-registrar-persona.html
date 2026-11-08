@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Registrar persona · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.unit-row{display:grid;grid-template-columns:1fr 1fr;gap:var(--space-3)}
+.date-row{display:grid;grid-template-columns:1fr;gap:var(--space-4)}
+@container shell (min-width:30em){.date-row{grid-template-columns:1fr 1fr}}
+.radios{display:flex;flex-direction:column;gap:var(--space-1);margin-top:var(--space-2)}
+.who{margin:0;font-size:1.125rem}
+.submit .btn{width:100%}
+.proto-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;margin-top:var(--space-2)}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script src="assets/registry-data.js"></script>
+<script>
+// P-053 · Registrar persona y vínculo — 09-ui-spec.md §3.7. Flujo F9 pasos 3–4. HU-001.
+// Rutas: /registry/persons/new?unitId= (persona nueva) y /registry/persons/{id}/occupancies/new (persona existente).
+// Reglas: RN-057 ⚠️ Q18 (solo nombre, correo y vínculo), RN-001, RN-002 (NRO no puede ser Tenant), RN-068 + RN-153 (correo repetido,
+// mensaje neutro), RN-131/RN-132 (persona en periodo de retención: el vínculo se agrega a su ficha), RN-146 ⏸ (sin DNI ni teléfono), RN-059 (auditoría),
+// RN-172 (FIELD_REQUIRED), RN-174 (OCCUPANCY_END_BEFORE_START). Textos de §3.0.6.
+(function () {
+  const { rn, alert, esc, fieldError } = CH;
+  const FIELD_ORDER = ['f-name', 'f-email', 'f-tower', 'f-type', 'f-start', 'f-end'];
+  const MSG = {
+    PERSON_REGISTRATION_REJECTED: 'No se pudo registrar a la persona con estos datos.',
+    OCCUPANCY_TENANT_NOT_ALLOWED: 'Un propietario no residente no puede tener un vínculo de inquilino.',
+    OCCUPANCY_END_BEFORE_START: 'La fecha de fin debe ser igual o posterior a la de inicio.',
+    // FIELD_REQUIRED (RN-172): "Completa {el campo}." (texto) o "Elige {el campo}." (lista)
+    FIELD_REQUIRED: { 'f-name': 'Completa el nombre completo.', 'f-email': 'Completa el correo electrónico.', 'f-tower': 'Elige la unidad.',
+      'f-type': 'Elige el tipo de vínculo.', 'f-start': 'Completa la fecha de inicio.' }
+  };
+  const NO_CODE = 'sin código en §3.0.6';
+  const isIso = d => /^\d{4}-\d{2}-\d{2}$/.test(d || '');
+
+  // Modo: persona existente (?personId=) o nueva. El estado "nroTenant" abre la ficha de Luis Rojas.
+  function personOf(c) {
+    if (c.state === 'nroTenant') return REG.person('p-luis');
+    const id = c.params.get('personId'); return id ? REG.person(id) : null;
+  }
+
+  function setup(c) {
+    const d = c.data; d.init = true; d.errors = null;
+    d.person = personOf(c);
+    const pu = REG.unit(c.params.get('unitId'));
+    d.fromUnit = pu;
+    d.f = { name: '', email: '', tower: pu ? pu.tower : '', number: pu ? pu.number : '', type: '', start: REG.today(), end: '' };
+    if (c.state === 'invalid') { d.f = { name: '', email: 'ana.quispe@', tower: '', number: '', type: '', start: '', end: '' }; d.errors = validate(c); }
+    if (c.state === 'dup') { Object.assign(d.f, { name: 'Ana María Quispe', email: 'Ana.Quispe@Example.pe', tower: 'A', number: '502', type: 'Owner' }); d.errors = validate(c); }
+    if (c.state === 'nroTenant') { Object.assign(d.f, { tower: 'A', number: '301', type: 'Tenant' }); d.errors = validate(c); }
+    if (c.state === 'required') { d.f = { name: '   ', email: '', tower: '', number: '', type: '', start: '', end: '' }; d.errors = validate(c); }
+    if (c.state === 'endBeforeStart') {     // RN-174: contraejemplo con las fechas invertidas
+      d.f = { name: 'Lucía Benítez', email: 'lucia.benitez@example.pe', tower: 'A', number: '402', type: 'Tenant', start: '2027-01-31', end: '2026-11-10' };
+      d.errors = validate(c);
+    }
+  }
+  const ensure = c => { if (!c.data.init) setup(c); };
+
+  // Simula la validación del servidor (POST /api/persons + POST /api/persons/{id}/occupancies)
+  function validate(c) {
+    const d = c.data, f = d.f, E = [], existing = d.person;
+    const add = (id, code, msg) => { if (!E.some(e => e.id === id)) E.push({ id, code, msg }); };
+    const required = id => add(id, 'FIELD_REQUIRED', MSG.FIELD_REQUIRED[id]);
+    if (!existing) {
+      if (!f.name.trim()) required('f-name');
+      if (!f.email.trim()) required('f-email');
+      else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.trim())) add('f-email', NO_CODE, 'Escribe un correo válido. Ejemplo: ana.quispe@example.pe');
+    }
+    if (!f.tower || !f.number) required('f-tower');
+    if (!f.type) required('f-type');
+    if (!f.start) required('f-start');
+    else if (!isIso(f.start)) add('f-start', NO_CODE, 'Ingresa una fecha válida.');
+    if (f.end && !isIso(f.end)) add('f-end', NO_CODE, 'Ingresa una fecha válida.');
+    else if (f.end && isIso(f.start) && f.end < f.start) add('f-end', 'OCCUPANCY_END_BEFORE_START', MSG.OCCUPANCY_END_BEFORE_START);
+    // RN-002: la persona tiene el rol NonResidentOwner → no puede tener un vínculo Tenant
+    if (existing && f.type === 'Tenant' && REG.roles(existing).includes('NonResidentOwner'))
+      add('f-type', 'OCCUPANCY_TENANT_NOT_ALLOWED', MSG.OCCUPANCY_TENANT_NOT_ALLOWED);
+    E.sort((x, y) => FIELD_ORDER.indexOf(x.id) - FIELD_ORDER.indexOf(y.id));
+    // RN-068 + RN-153: correo ya usado en el condominio → mensaje neutro, sin campo. RN-132: si está en retención, se reutiliza su ficha.
+    if (!E.length && !existing) {
+      const other = REG.findByEmail(f.email);
+      if (other && !REG.retention(other)) E.push({ id: null, code: 'PERSON_REGISTRATION_REJECTED', msg: MSG.PERSON_REGISTRATION_REJECTED });
+    }
+    return E;
+  }
+
+  function renderPage(c) {
+    const d = c.data, f = d.f, E = d.errors || [], existing = d.person;
+    const err = id => E.find(x => x.id === id);
+    const desc = (id, ...hints) => { const ids = hints.filter(Boolean); if (err(id)) ids.push(id + '-err');
+      return (ids.length ? ` aria-describedby="${ids.join(' ')}"` : '') + (err(id) ? ' aria-invalid="true"' : ''); };
+    const fe = id => err(id) ? `<div id="${id}-err">${fieldError(esc(err(id).msg))}</div>` : '';
+    const req = '<span class="req">(obligatorio)</span>';
+    const ts = REG.towers(), nums = f.tower ? REG.unitsOf(f.tower) : [];
+
+    let back;
+    if (existing) back = ['P-054', 'id=' + existing.id, existing.name];
+    else if (d.fromUnit) back = ['P-052', 'id=' + d.fromUnit.id, 'Unidad ' + d.fromUnit.code];
+    else back = ['P-050', '', 'Padrón'];
+    const bp = back[1] ? ` data-params="${back[1]}"` : '';
+    c.title = existing ? 'Agregar vínculo' : 'Registrar persona';
+
+    let h = `<div><nav class="crumbs" aria-label="Migas de pan"><ol><li><a href="#" data-go="P-050">Padrón</a></li>${back[0] !== 'P-050' ? `<li><a href="#" data-go="${back[0]}"${bp}>${esc(back[2])}</a></li>` : ''}<li aria-current="page">${c.title}</li></ol></nav>
+      <a href="#" class="back" data-go="${back[0]}"${bp}>← ${esc(back[2])}</a>
+      <h1 class="page">${c.title}</h1></div>`;
+    h += REG.asOfNote();
+
+    if (E.length) {
+      h += alert('danger', existing ? 'No pudimos agregar el vínculo' : 'No pudimos registrar a la persona',
+        E.length === 1 && !E[0].id ? `<p>${esc(E[0].msg)}</p>${rn('422 PERSON_REGISTRATION_REJECTED · RN-068 · RN-153: mensaje neutro, no dice que el correo ya existe ni a quién pertenece · se conservan los valores')}`
+          : `<p>${E.length === 1 ? 'Corrige este dato:' : `Corrige estos ${E.length} datos:`}</p>
+             <ul>${E.map(e => e.id ? `<li><a href="#${e.id === 'f-type' ? 'f-type-owner' : e.id}" data-focus="${e.id === 'f-type' ? 'f-type-owner' : e.id}">${esc(e.msg)}</a></li>` : `<li>${esc(e.msg)}</li>`).join('')}</ul>
+             ${rn('422 · ' + E.map(e => e.code).join(', ') + ' · se conservan los valores')}`, 'alert');
+    }
+
+    h += `<form class="form" method="post" action="${existing ? `/api/persons/${existing.id}/occupancies` : '/api/persons'}" id="f-person" novalidate>`;
+    if (existing) {
+      h += `<section class="sec" aria-labelledby="h-person"><h2 id="h-person">Persona</h2>
+        <p class="who"><strong>${esc(existing.name)}</strong> <span class="muted">· ${esc(existing.email)}</span></p>
+        ${rn('Persona existente: POST /api/persons/' + existing.id + '/occupancies · roles: ' + (REG.roles(existing).map(r => REG.ROLE[r]).join(', ') || 'ninguno'))}</section>`;
+    } else {
+      h += `<section class="sec" aria-labelledby="h-person"><h2 id="h-person">Persona</h2>
+        <div class="field"><label for="f-name">Nombre completo ${req}</label>
+          <input class="input" id="f-name" name="fullName" autocomplete="off" value="${esc(f.name)}"${desc('f-name')}>${fe('f-name')}</div>
+        <div class="field"><label for="f-email">Correo electrónico ${req}</label>
+          <input class="input" type="email" id="f-email" name="email" autocomplete="off" spellcheck="false" value="${esc(f.email)}"${desc('f-email')}>${fe('f-email')}</div>
+        ${alert('info', 'El DNI y el teléfono los registra la propia persona después de aceptar el consentimiento.', '')}
+        ${rn('RN-057 ⚠️ Q18 · antes del consentimiento solo nombre, correo y vínculo · RN-146 ⏸ ADR-0020 · no hay campos de DNI ni teléfono')}</section>`;
+    }
+
+    h += `<section class="sec" aria-labelledby="h-occ"><h2 id="h-occ">Vínculo con la unidad</h2>
+      <fieldset class="field"><legend class="field-label">Unidad ${req}</legend>
+        <div class="unit-row">
+          <div class="field"><label for="f-tower">Torre</label><select class="select" id="f-tower" name="tower"${desc('f-tower')}>
+            <option value="">Elige</option>${ts.map(t => `<option value="${t}"${t === f.tower ? ' selected' : ''}>Torre ${t}</option>`).join('')}</select></div>
+          <div class="field"><label for="f-number">Número</label><select class="select" id="f-number" name="number"${err('f-tower') ? ' aria-invalid="true" aria-describedby="f-tower-err"' : ''}>${numberOptions(nums, f.number)}</select></div>
+        </div>${fe('f-tower')}
+        ${d.fromUnit && !existing ? rn('Unidad preseleccionada desde P-052 (?unitId=' + d.fromUnit.id + ')') : ''}</fieldset>
+      <fieldset class="field"${err('f-type') ? ' aria-describedby="f-type-err"' : ''}><legend class="field-label">Tipo de vínculo ${req}</legend>
+        <div class="radios">
+          <label class="check" for="f-type-owner"><input type="radio" id="f-type-owner" name="occupancyType" value="Owner"${f.type === 'Owner' ? ' checked' : ''}${err('f-type') ? ' aria-invalid="true"' : ''}><span>Propietario</span></label>
+          <label class="check" for="f-type-tenant"><input type="radio" id="f-type-tenant" name="occupancyType" value="Tenant"${f.type === 'Tenant' ? ' checked' : ''}${err('f-type') ? ' aria-invalid="true"' : ''}><span>Inquilino</span></label>
+        </div>${fe('f-type')}
+        ${rn('RN-001 · Owner o Tenant · RN-002 · si la persona tiene el rol NonResidentOwner, Tenant → OCCUPANCY_TENANT_NOT_ALLOWED')}</fieldset>
+      <div class="date-row">
+        <div class="field"><label for="f-start">Desde ${req}</label>
+          <input class="input tnum" type="date" id="f-start" name="startDate" value="${esc(f.start)}"${desc('f-start')}>${fe('f-start')}</div>
+        <div class="field"><label for="f-end">Hasta (opcional)</label>
+          <p class="hint" id="f-end-hint">Último día del vínculo. Déjalo vacío si no tiene fin.</p>
+          <input class="input tnum" type="date" id="f-end" name="endDate" value="${esc(f.end)}"${f.start && isIso(f.start) ? ` min="${f.start}"` : ''}${desc('f-end', 'f-end-hint')}>${fe('f-end')}
+          ${rn('RN-174 · fin anterior al inicio → OCCUPANCY_END_BEFORE_START · igual al inicio se acepta (vínculo de un día) · vacío = indefinido · el min del campo es solo una ayuda')}</div>
+      </div>
+      ${rn('ADR-0001 · activo mientras StartDate ≤ hoy y EndDate vacío o ≥ hoy (America/Lima) · un inicio futuro impide invitar hasta esa fecha (RN-157) · RN-172 · un FIELD_REQUIRED por campo vacío (nombre, correo, unidad, tipo de vínculo, desde); solo espacios cuenta como vacío')}
+      </section>
+      <div class="submit"><button class="btn btn-primary" type="submit" id="btn-save">Registrar</button></div>
+      ${rn('RN-059 · al guardar, el log de auditoría registra valor anterior vacío, valor nuevo «unidad · tipo», autor y fecha-hora ISO 8601')}
+    </form>`;
+    return `<div class="content read">${h}</div>`;
+  }
+
+  function numberOptions(nums, sel) {
+    if (!nums.length) return '<option value="">Elige primero la torre</option>';
+    return '<option value="">Elige</option>' + nums.map(u => `<option value="${u.number}"${u.number === sel ? ' selected' : ''}>${u.number}</option>`).join('');
+  }
+
+  const ctx = CH.init({
+    code: 'P-053', title: 'Registrar persona', active: 'P-050',
+    roles: ['rosa', 'rosaRes', 'marco', 'ana', 'raul'],
+    states: [['data', 'Con datos'], ['invalid', 'Error de validación'], ['dup', 'Correo ya registrado (otras mayúsculas)'],
+      ['nroTenant', 'Luis (NRO) como inquilino'], ['required', 'Campos vacíos (FIELD_REQUIRED)'], ['endBeforeStart', 'Hasta antes de Desde (OCCUPANCY_END_BEFORE_START)'],
+      ['loading', 'Cargando'], ['error', 'Error']],
+    extraControls: `<div class="proto-actions"><button class="proto-btn" type="button" data-fill="valid">Rellenar ejemplo válido (B-105)</button>
+      <button class="proto-btn" type="button" data-fill="carla">Carla vuelve como inquilina de A-301 (retención, 01/03/2027)</button>
+      <button class="proto-btn" type="button" data-fill="sofia">Inquilina con inicio futuro (01/08/2027)</button></div>${REG.asOfControl()}`,
+    route(c) {
+      ensure(c);
+      if (c.data.person) return `/registry/persons/${c.data.person.id}/occupancies/new`;
+      return '/registry/persons/new' + (c.data.fromUnit ? '?unitId=' + c.data.fromUnit.id : '');
+    },
+    render(c) {
+      // Matriz R2: solo Administrator
+      if (!c.persona.admin) { c.title = 'No tienes acceso a esta página'; return CH.deniedView(); }
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      ensure(c);
+      if (c.params.get('personId') && !c.data.person && c.state !== 'nroTenant') return REG.notFoundView(c, 'P-050');
+      return renderPage(c);
+    },
+    afterRender() { REG.syncAsOfControl(); }
+  });
+  REG.bindAsOf(ctx);
+
+  const $id = id => document.getElementById(id);
+  function sync() {
+    const f = ctx.data.f; if (!f) return;
+    ['name', 'email', 'tower', 'number', 'start', 'end'].forEach(k => { const el = $id('f-' + k); if (el) f[k] = el.value; });
+    const t = document.querySelector('input[name="occupancyType"]:checked'); f.type = t ? t.value : '';
+  }
+
+  document.addEventListener('change', e => {
+    if (e.target.id === 'f-tower') { sync(); ctx.data.f.number = ''; $id('f-number').innerHTML = numberOptions(ctx.data.f.tower ? REG.unitsOf(ctx.data.f.tower) : [], ''); }
+    if (e.target.id === 'f-start' && $id('f-end')) { if (e.target.value) $id('f-end').min = e.target.value; else $id('f-end').removeAttribute('min'); }
+  });
+
+  document.addEventListener('click', e => {
+    const fl = e.target.closest('[data-focus]');
+    if (fl) { e.preventDefault(); const el = $id(fl.dataset.focus); if (el) { el.focus(); el.scrollIntoView({ block: 'center' }); } return; }
+    const b = e.target.closest('[data-fill]');
+    if (!b || !ctx.persona.admin || ctx.state === 'loading' || ctx.state === 'error') return;
+    if (b.dataset.fill === 'carla') REG.setAsOf('2027-03-01T10:00');
+    // Vuelve al modo persona nueva con datos de ejemplo
+    ctx.state = 'data'; const r = $id('ch-st-data'); if (r) r.checked = true;
+    ctx.data = {}; setup(ctx); ctx.data.person = null;
+    const F = {
+      valid: { name: 'Valeria Núñez', email: 'valeria.nunez@example.pe', tower: 'B', number: '105', type: 'Owner', start: REG.today(), end: '' },
+      carla: { name: 'Carla Díaz', email: 'carla.diaz@example.pe', tower: 'A', number: '301', type: 'Tenant', start: '2027-03-01', end: '' },
+      sofia: { name: 'Lucía Benítez', email: 'lucia.benitez@example.pe', tower: 'A', number: '402', type: 'Tenant', start: '2027-08-01', end: '' }
+    }[b.dataset.fill];
+    if (!REG.unitByCode(F.tower + '-' + F.number)) { F.tower = ''; F.number = ''; }
+    ctx.data.f = F; ctx.rerender();
+  });
+
+  document.addEventListener('submit', e => {
+    if (e.target.id !== 'f-person') return;
+    e.preventDefault(); sync();
+    CH.sending($id('btn-save'), 700, () => {
+      const d = ctx.data, f = d.f, E = validate(ctx);
+      if (E.length) { d.errors = E; ctx.rerender(); return; }
+      const u = REG.unitByCode(f.tower + '-' + f.number);
+      let p = d.person, reused = false;
+      if (!p) {
+        const other = REG.findByEmail(f.email);
+        if (other) { p = other; reused = true; }          // RN-132: misma ficha (mismo PersonId); RN-131 anula el plazo de retención
+        else p = REG.addPerson(f.name.trim(), f.email);
+      }
+      REG.addOcc(p.id, u.id, f.type, f.start, f.end);
+      CH.go('P-054', 'id=' + p.id + '&registered=' + (d.person ? 'occ' : reused ? 'reused' : '1'));
+    });
+  });
+})();
+</script>
+</body>
+</html>

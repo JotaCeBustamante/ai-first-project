@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Antes de empezar: tus datos · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.auth-card{max-width:40rem}
+.consent{display:flex;flex-direction:column;gap:var(--space-4);line-height:1.6}
+.consent h2{margin:var(--space-2) 0 0;font-size:1.125rem}
+.consent p{margin:0}
+.consent .alert h2{margin:0}
+.decision{display:flex;flex-direction:column;gap:var(--space-3)}
+.decision .btn{width:100%}
+@container shell (min-width:37.5em){.decision{flex-direction:row-reverse;justify-content:flex-start}.decision .btn{width:auto}}
+.consent-notes{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.proto-info{color:var(--proto-muted);margin:var(--space-2) 0 0;max-width:52rem}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-007 · Consentimiento informado — 09-ui-spec.md §3.1. Flujos F1, F2 (paso 4), F13 (paso 2).
+// Reglas: RN-010 (sin aceptación no hay otra pantalla en ese condominio), RN-011 (transferencia a Azure South Central US),
+// RN-012 (versión y fecha en la ficha Person del condominio), RN-070 (rechazo: cuenta sin activar), RN-071 (versión nueva). ⚠️ Q18 ⚠️ Q32
+(function () {
+  const { ICON, rn, alert, esc, store } = CH;
+  const VERSIONS = { first: '2026-11-01.v1', updated: '2027-01-10.v2' };
+
+  let rejected = false;
+  const condo = () => store.get('condo-v1') || CH.DATA.condo;
+
+  function view(c) {
+    const st = c.state;
+    if (st === 'error') { c.title = 'Algo salió mal'; return errorView(); }
+    if (rejected || st === 'rejected') { c.title = 'No aceptaste el consentimiento'; return rejectedView(); }
+    c.title = 'Antes de empezar: tus datos';
+    const version = st === 'updated' ? VERSIONS.updated : VERSIONS.first;
+    const busy = st === 'loading';
+
+    let h = '';
+    if (st === 'updated') h += alert('info', 'Actualizamos este texto. Léelo y acéptalo para seguir usando CondoHub.', rn('RN-071 · versión nueva: se acepta en el siguiente inicio de sesión, por cada ficha Person'));
+    h += `<div><h1 class="page">Antes de empezar: tus datos</h1>
+      <p class="muted" style="margin:0">${esc(condo())} · versión <span class="tnum">${version}</span></p></div>
+      <div class="consent">
+        ${rn('⚠️ Q18 · Q32 · texto provisional: la base legal y el texto final están pendientes. Solo la sección de Estados Unidos es obligatoria hoy (RN-011)')}
+        <h2>Quién trata tus datos</h2>
+        <p>La administración de ${esc(condo())} es responsable de tus datos. CondoHub es la plataforma que usa para gestionar el condominio.</p>
+        <h2>Para qué los usamos</h2>
+        <p>Para identificarte como persona del padrón, reservar las áreas comunes, registrar a tus invitados en portería y mostrarte los gastos y contrataciones del condominio, según tu rol.</p>
+        <h2>Qué datos guardamos</h2>
+        <p>Tu nombre, tu correo, tus vínculos con las unidades y lo que registras en la plataforma, como tus reservas y los nombres de tus invitados.</p>
+        <div class="alert alert-info">${ICON.info}<div class="alert-body">
+          <h2>Tus datos se guardan en Estados Unidos</h2>
+          <p>Tus datos se almacenan en servidores de Microsoft Azure ubicados en Estados Unidos (región South Central US).</p>
+          ${rn('RN-011 · transferencia internacional · no se puede omitir (criterio de HU-002B)')}</div></div>
+        <h2>Cuánto tiempo los guardamos</h2>
+        <p>Mientras tengas un vínculo o un rol en el condominio, y luego durante los plazos de retención que fija el condominio.</p>
+        ${rn('Plazos según las reglas de retención de 03-reglas-de-negocio.md · texto final pendiente de Q18')}
+        <h2>Tus derechos</h2>
+        <p>Puedes pedir a la administración acceder a tus datos, corregirlos o eliminarlos.</p>
+        ${rn('ARCO diferido (ADR-0010): la solicitud es fuera de la plataforma')}
+      </div>`;
+    if (busy) h += `<p class="rn always">SSR: no hay estado de carga en el cliente. 🧩 JS opcional: el botón pulsado pasa a "Enviando…" (aria-disabled).</p>`;
+    h += `<form class="decision" id="consent" method="post" action="/api/consents/current/decision">
+        <button class="btn btn-primary" type="submit" name="decision" value="Accepted"${busy ? ' aria-disabled="true"' : ''}>${busy ? 'Enviando…' : 'Acepto'}</button>
+        <button class="btn btn-secondary" type="submit" name="decision" value="Rejected"${busy ? ' aria-disabled="true"' : ''}>No acepto</button>
+      </form>
+      <div class="consent-notes">${rn(`RN-012 · al aceptar se guarda { consentVersion: "${version}", acceptedAt } en la ficha Person de ${esc(condo())}, no en la cuenta`)}
+        ${rn('RN-010 · mientras falte la aceptación, toda otra ruta de este condominio redirige aquí')}
+        ${rn('Éxito → returnUrl o P-010 (P-020 para Concierge)')}</div>`;
+    return h;
+  }
+
+  function rejectedView() {
+    return `<div class="page-state">${ICON.big}<h1 class="page">No aceptaste el consentimiento</h1>
+      <p style="margin:0">Sin tu aceptación no puedes usar CondoHub en ${esc(condo())}. Puedes aceptarlo cuando vuelvas a iniciar sesión.</p>
+      <a href="#" class="btn btn-primary btn-block" data-go="P-001">Volver a iniciar sesión</a>
+      ${rn('RN-070 · la cuenta queda sin activar y la sesión se cierra · al volver a iniciar sesión solo verá esta pantalla (HU-002B)')}</div>`;
+  }
+
+  function errorView() {
+    return `<div class="page-state">${ICON.big}<h1 class="page">Algo salió mal</h1>
+      <p style="margin:0">Algo salió mal. Inténtalo de nuevo en unos minutos.</p>
+      <p class="muted">Si el problema continúa, comparte este código con la administración: <span class="trace">00-6d2a85f1c0e34b97a3d1e8b0c5f74a26-2c8f1a0d9e4b7356-01</span></p>
+      <button class="btn btn-primary" type="button" data-retry>Volver a intentar</button>${rn('§3.0.4 · error inesperado 500 con traceId')}</div>`;
+  }
+
+  const ctx = CH.init({
+    code: 'P-007', title: 'Consentimiento informado', shell: 'auth', roleLabel: 'Quién inicia sesión',
+    roles: ['carla', 'ana', 'luis', 'marco', 'rosa', 'raul'],
+    states: [['first', 'Primera vez'], ['updated', 'Versión nueva (RN-071)'], ['rejected', 'Rechazado'], ['loading', 'Cargando'], ['error', 'Error']],
+    route: () => '/consent',
+    extraControls: `<p class="proto-info">El condominio es el elegido en P-005 o, si no hubo elección, ${esc(CH.DATA.condo)}.
+      "No acepto" deja el consentimiento pendiente para esta persona: al volver a iniciar sesión, o al abrir cualquier pantalla de la app (p. ej. P-014), llega otra vez aquí (RN-010, RN-070). "Reiniciar datos" lo borra.</p>`,
+    render: view
+  });
+
+  document.addEventListener('submit', e => {
+    const f = e.target.closest('#consent'); if (!f) return;
+    e.preventDefault();
+    const btn = e.submitter || f.querySelector('button[value="Accepted"]');
+    if (btn.getAttribute('aria-disabled') === 'true') return;
+    f.querySelectorAll('button').forEach(b => b.setAttribute('aria-disabled', 'true'));
+    btn.removeAttribute('aria-disabled');
+    CH.sending(btn, 600, () => {
+      const rej = btn.value === 'Rejected';
+      CH.setConsentPending(ctx.roleKey, rej);                  // RN-070: queda pendiente; RN-010: la app redirige aquí
+      if (rej) { rejected = true; return ctx.rerender(true); }
+      CH.finishSignIn();
+    });
+  });
+
+  document.addEventListener('click', e => {
+    if (e.target.closest('[data-retry]')) { document.getElementById('ch-st-first').checked = true; ctx.state = 'first'; rejected = false; ctx.rerender(true); }
+  });
+
+  document.addEventListener('change', e => { if (e.target.id === 'ch-role' || e.target.name === 'ch-st') rejected = false; }, true);
+})();
+</script>
+</body>
+</html>

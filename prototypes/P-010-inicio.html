@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Inicio · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.counter{font-size:1.5rem;line-height:1.3;font-weight:700;margin:0}
+.counter b{color:var(--color-accent)}
+.card-board{display:flex;flex-direction:column;gap:var(--space-4);align-items:flex-start}
+.resv{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.resv li{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:var(--space-2) var(--space-4);padding:var(--space-3) 0;border-bottom:1px solid var(--color-border-subtle);min-height:56px}
+.resv li:first-child{border-top:1px solid var(--color-border-subtle)}
+.resv a{font-weight:600;font-size:1.125rem}
+.resv .meta{display:block;color:var(--color-text-muted);font-weight:400;font-size:1rem}
+.acc{display:flex;flex-direction:column;gap:var(--space-2)}
+.acc a{font-size:1.25rem;line-height:1.4;font-weight:600;text-decoration:none}
+.acc a:hover{text-decoration:underline}
+.acc a::after{content:" →"}
+.acc p{margin:0;color:var(--color-text-muted)}
+.admin-today{align-items:flex-start}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-010 · Inicio — 09-ui-spec.md §3.2. Reglas: RN-088, RN-099, RN-015.
+(function () {
+  const { DATA, ICON, TODAY, timeTag, rn, alert } = CH;
+  // Contrataciones Submitted: 1 ("Pintura de fachada") o lo que se haya decidido en P-041 durante la sesión
+  const PENDING_HIRES = (() => {
+    try { const h = JSON.parse(CH.store.get('hires-v1')); if (Array.isArray(h)) return h.filter(x => x.status === 'Submitted').length; } catch (e) { }
+    return 1;
+  })();
+  const seen = new Set();           // avisos marcados "Entendido" en esta sesión
+  let status = null;
+
+  const plural = n => `${n} ${n === 1 ? 'contratación' : 'contrataciones'} por decidir`;
+  const link = (code, text, params) => `<a href="#" data-go="${code}"${params ? ` data-params="${params}"` : ''}>${text}</a>`;
+  // RN-088: avisos de reservas propias canceladas por la administración y no vistas
+  const noticesFor = p => DATA.reservations.filter(r => p.units.includes(r.unit) && r.status === 'Cancelled' && r.cancelledBy === 'admin' && !seen.has(r.id));
+  const upcomingFor = p => DATA.reservations.filter(r => p.units.includes(r.unit) && r.status === 'Confirmed' && r.date >= TODAY)
+    .sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start)).slice(0, 3);
+  const todayCount = () => DATA.reservations.filter(r => r.date === TODAY && r.status === 'Confirmed').length;
+
+  function renderData(ctx) {
+    const p = ctx.persona, empty = ctx.state === 'empty';
+    let h = `<div><h1 class="page">Hola, ${p.first}</h1></div>`;
+    if (status) h += status.kind === 'success'
+      ? alert('success', status.title, '', 'status')
+      : alert('danger', status.title, `<p>${status.text}</p>`, 'alert');
+
+    const notices = empty ? [] : noticesFor(p);
+    if (notices.length) {
+      h += `<section class="sec" aria-labelledby="h-avisos"><h2 id="h-avisos" class="sr-only">Avisos</h2>
+        ${rn('RN-088 · aviso solo si canceló otra persona · se muestra hasta pulsar "Entendido"')}<div class="alerts">` +
+        notices.map(r => alert('warning', 'La administración canceló tu reserva',
+          `<p>${r.area} · ${timeTag(r)}</p><form data-notice="${r.id}"><button class="btn btn-secondary" type="submit">Entendido</button></form>`)).join('') +
+        `</div></section>`;
+    }
+
+    if (p.board) {
+      const n = empty ? 0 : PENDING_HIRES;
+      h += `<section class="card card-accent card-board" aria-labelledby="h-board">
+        ${rn('RN-099 · contador de contrataciones Submitted, también con 0')}
+        <h2 id="h-board" class="counter tnum">${n > 0 ? `<b>${n}</b> ${plural(n).slice(String(n).length + 1)}` : plural(0)}</h2>
+        ${n > 0 ? `<a href="#" class="btn btn-primary btn-block" data-go="P-040" data-params="status=Submitted">Revisar contrataciones →</a>`
+                : `<p class="muted">La Junta Directiva no tiene contrataciones pendientes. ${link('P-040', 'Ver contrataciones')}</p>`}
+      </section>`;
+    }
+
+    if (p.resident) {
+      const up = empty ? [] : upcomingFor(p);
+      h += `<section class="sec" aria-labelledby="h-resv"><h2 id="h-resv">Tus próximas reservas</h2>${rn('Máx. 3 · solo para quien reserva')}` +
+        (up.length ? `<ul class="resv">${up.map(r => `<li><span>${link('P-015', r.area, 'id=' + r.id)}<span class="meta">${timeTag(r)}</span></span>${CH.resBadge(r.status)}</li>`).join('')}</ul>`
+                   : `<div class="empty">${ICON.cal}<p class="muted">No tienes reservas próximas.</p></div>`) +
+        `<div><a href="#" class="btn btn-primary btn-block" data-go="P-011">Reservar un área</a></div></section>`;
+    }
+
+    if (p.admin) {
+      const t = empty ? 0 : todayCount();
+      h += `<section class="sec admin-today" aria-labelledby="h-today"><h2 id="h-today">Reservas de hoy</h2>${rn('El Administrator reserva desde P-062, no desde P-011')}
+        <p class="tnum" style="margin:0;font-size:1.125rem">${t > 0 ? `${t} ${t === 1 ? 'reserva confirmada' : 'reservas confirmadas'}` : 'No hay reservas confirmadas para hoy.'}</p>
+        <a href="#" class="btn ${p.resident ? 'btn-secondary' : 'btn-primary'} btn-block" data-go="P-062" data-params="date=${TODAY}">Ver reservas del condominio</a></section>`;
+    }
+
+    const acc = [];
+    if (p.fin) acc.push(['P-030', 'Gastos del condominio', 'En qué se gastó la cuota de noviembre 2026'],
+                        ['P-040', 'Contrataciones', 'Cotizaciones, justificación y decisiones de la Junta']);
+    if (p.admin) acc.push(['P-050', 'Padrón', 'Torres, unidades, personas e invitaciones'],
+                          ['P-060', 'Áreas comunes', 'Horarios, aforo y cupos de cada área'],
+                          ['P-032', 'Registrar gasto', 'Monto, categoría, proveedor y comprobante']);
+    if (acc.length) {
+      h += `<section class="sec" aria-labelledby="h-acc"><h2 id="h-acc">Accesos</h2>${rn('RN-015 · financieros solo con canViewFinancials')}
+        <div class="grid grid-3">${acc.map(([c, t, d]) => `<div class="card acc">${link(c, t)}<p>${d}</p></div>`).join('')}</div></section>`;
+    } else {
+      h += rn('RN-015 · inquilina sin vínculo Owner: sin accesos a Gastos ni Contrataciones (ni deshabilitados)');
+    }
+    return `<div class="content">${h}</div>`;
+  }
+
+  const ctx = CH.init({
+    code: 'P-010', title: 'Inicio',
+    roles: ['ana', 'carla', 'luis', 'marco', 'rosa', 'rosaRes'],
+    extraControls: `<label class="chk" for="failSeen"><input type="checkbox" id="failSeen"> Simular fallo en "Entendido"</label>
+      <button class="proto-btn" id="reset" type="button">Reiniciar avisos</button>`,
+    menuCounts: c => c.persona.board && (c.state === 'data' || c.state === 'empty') ? { 'P-040': c.state === 'empty' ? 0 : PENDING_HIRES } : {},
+    render(c) {
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      c.title = 'Inicio';
+      return renderData(c);
+    }
+  });
+
+  document.addEventListener('submit', e => {
+    const f = e.target.closest('form[data-notice]'); if (!f) return;
+    e.preventDefault();
+    CH.sending(f.querySelector('button'), 700, () => {
+      if (document.getElementById('failSeen').checked)
+        status = { kind: 'error', title: 'No pudimos guardar el aviso como visto', text: 'Revisa tu conexión y vuelve a pulsar "Entendido". El aviso seguirá aquí hasta que se guarde.' };
+      else { seen.add(f.dataset.notice); status = { kind: 'success', title: 'Listo. No volverás a ver este aviso.' }; }
+      ctx.rerender();
+    });
+  });
+  document.addEventListener('change', e => { if (e.target.id === 'ch-role' || e.target.name === 'ch-st') status = null; }, true);
+  document.addEventListener('click', e => { if (e.target.id === 'reset') { seen.clear(); status = null; ctx.rerender(); } });
+})();
+</script>
+</body>
+</html>

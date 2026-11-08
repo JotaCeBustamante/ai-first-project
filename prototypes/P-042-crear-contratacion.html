@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Crear o editar contratación · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.content.w48{max-width:48rem}
+.head{display:flex;flex-direction:column;gap:var(--space-2)}
+.title-row{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2) var(--space-4)}
+.step{display:flex;flex-direction:column;gap:var(--space-6)}
+.step h2:focus{box-shadow:none}
+.count{margin:var(--space-2) 0 0;font-weight:600}
+.count.short{color:var(--color-warning)}
+.money{display:flex;align-items:center;gap:var(--space-2)}
+.money>span{font-weight:600;margin-top:var(--space-2)}
+.money .input{max-width:14rem}
+.sub{border-top:1px solid var(--color-border-subtle);padding-top:var(--space-6);display:flex;flex-direction:column;gap:var(--space-6)}
+.sub h3:focus{box-shadow:none}
+.ruc{display:block;color:var(--color-text-muted)}
+.nodoc{color:var(--color-text-muted)}
+.checklist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-2)}
+.checklist li{display:flex;gap:var(--space-2);align-items:flex-start}
+.checklist li svg{flex:none;margin-top:2px}
+.checklist .ok{color:var(--color-success)}
+.checklist .ko{color:var(--color-danger)}
+.checklist .ok span,.checklist .ko span{color:var(--color-text)}
+.btn-full{width:100%}
+@container shell (min-width:37.5em){.btn-full{width:auto}}
+.simfile{margin:var(--space-2) 0 0;font-weight:600}
+.notfound{align-items:center;text-align:center;margin:0 auto}
+.notfound>svg{color:var(--color-text-muted)}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-042 · Crear o editar contratación — 09-ui-spec.md §3.6 P-042 y flujo F8 (pasos 1–3 y 5b). HU-012.
+// Reglas: RN-037 ⚠️ Q23 ⚠️ Q30, RN-038, RN-093, RN-096, RN-097, RN-100, RN-098, RN-042, RN-106/RN-166 ⚠️ Q28,
+// RN-172 (FIELD_REQUIRED), RN-173 (AMOUNT_INVALID_FORMAT) — textos de §3.0.6.
+// Datos: lee y escribe las contrataciones en sessionStorage 'ch:hires-v1' (mismo formato que P-040/P-041)
+// y los proveedores registrados en P-043 en 'ch:suppliers-v1'.
+(function () {
+  const { ICON, TODAY, money, badge, rn, esc, fmtDate, store, alert, fieldError } = CH;
+
+  // ---------- Datos compartidos con P-040 / P-041 ----------
+  const KEY = 'hires-v1', SUP_KEY = 'suppliers-v1';
+  const SEED = CH.DATA.hires;
+  const clone = o => JSON.parse(JSON.stringify(o));
+  const load = () => { try { const s = JSON.parse(store.get(KEY)); if (Array.isArray(s)) return s; } catch (e) { } return clone(SEED); };
+  let hires = load();
+  const save = () => store.set(KEY, JSON.stringify(hires));
+  const byId = id => hires.find(h => h.id === id);
+  function persist(h) {
+    delete h._virtual;
+    const i = hires.findIndex(x => x.id === h.id);
+    if (i >= 0) hires[i] = h; else hires.push(h);
+    save();
+  }
+
+  // Proveedores: los de las cotizaciones del seed + uno extra + los registrados en P-043 (por RUC, el último gana)
+  const EXTRA_SUPPLIERS = [{ ruc: '20601122334', name: 'Impermeabilizaciones del Sur SAC' }];
+  function suppliers() {
+    const map = new Map();
+    SEED.forEach(h => h.quotes.forEach(q => map.set(q.ruc, { id: 's-' + q.ruc, ruc: q.ruc, name: q.supplier, natural: !!q.natural })));
+    EXTRA_SUPPLIERS.forEach(s => map.set(s.ruc, Object.assign({ id: 's-' + s.ruc, natural: false }, s)));
+    try { (JSON.parse(store.get(SUP_KEY)) || []).forEach(s => map.set(s.ruc, s)); } catch (e) { }
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'es'));
+  }
+  const vendorById = id => suppliers().find(s => s.id === id);
+  const vendorByRuc = ruc => suppliers().find(s => s.ruc === ruc);
+
+  const STATUS = { Draft: ['neutral', 'Borrador'], Submitted: ['warning', 'Enviada a la Junta'], Approved: ['success', 'Aprobada'] };
+  const STATUS_IN_TEXT = { Submitted: 'enviada a la Junta', Approved: 'aprobada' };
+  const statusBadge = s => badge(STATUS[s][0], STATUS[s][1]);
+  // Textos de 09-ui-spec.md §3.0.6 (copiados textualmente)
+  const MSG = {
+    HIRE_INSUFFICIENT_QUOTES: 'Agrega cotizaciones de al menos 2 proveedores distintos.',
+    HIRE_JUSTIFICATION_TOO_SHORT: 'La justificación debe tener al menos 20 caracteres.',
+    QUOTE_AMOUNT_NOT_POSITIVE: 'El monto debe ser mayor que S/ 0.00.',
+    AMOUNT_INVALID_PRECISION: 'Usa como máximo 2 decimales.',
+    HIRE_NOT_EDITABLE: e => `Esta contratación ya no se puede editar porque está ${e}.`,
+    ATTACHMENT_TOO_LARGE: 'El archivo supera 10 MB.',
+    ATTACHMENT_TYPE_NOT_ALLOWED: 'Solo se aceptan archivos PDF, JPG o PNG.',
+    AMOUNT_INVALID_FORMAT: 'Escribe el monto con números y punto decimal. Ejemplo: 1200.50',
+    // FIELD_REQUIRED (RN-172): "Completa {el campo}." (texto) o "Elige {el campo}." (lista)
+    FIELD_REQUIRED: { 'f-title': 'Completa el título.', 'f-supplier': 'Elige el proveedor.', 'f-amount': 'Completa el monto.' }
+  };
+  const required = id => ({ id, code: 'FIELD_REQUIRED', msg: MSG.FIELD_REQUIRED[id] });
+  // Monto de cotización: formato (RN-173) antes que precisión (RN-093) y que monto > 0 (RN-100)
+  function amountError(raw) {
+    if (!raw) return required('f-amount');
+    if (!/^-?\d+(\.\d+)?$/.test(raw)) return { id: 'f-amount', code: 'AMOUNT_INVALID_FORMAT', msg: MSG.AMOUNT_INVALID_FORMAT };
+    if ((raw.split('.')[1] || '').length > 2) return { id: 'f-amount', code: 'AMOUNT_INVALID_PRECISION', msg: MSG.AMOUNT_INVALID_PRECISION };
+    if (Number(raw) <= 0) return { id: 'f-amount', code: 'QUOTE_AMOUNT_NOT_POSITIVE', msg: MSG.QUOTE_AMOUNT_NOT_POSITIVE };
+    return null;
+  }
+  const MAX_MB = 10, ALLOWED_EXT = ['pdf', 'jpg', 'jpeg', 'png'];
+  const trimLen = s => String(s || '').trim().length;
+
+  // ---------- Casos de HU-012 (bordes incluidos) sobre "Pintura de fachada" (h-101) en Borrador ----------
+  const PL = { supplier: 'Pinturas Lima SAC', ruc: '20512345678', amount: 18500, doc: 'cotizacion-pinturas-lima-sac.pdf' };
+  const PL2 = { supplier: 'Pinturas Lima SAC', ruc: '20512345678', amount: 19200, doc: 'cotizacion-pinturas-lima-sac-v2.pdf' };
+  const CP = { supplier: 'Color Perú EIRL', ruc: '20587654321', amount: 21000, doc: 'cotizacion-color-peru-eirl.pdf' };
+  const J = 'Se elige Pinturas Lima SAC por menor precio (S/ 2,500.00 menos) y 3 años de garantía frente a 1';
+  const CASES = {
+    C1: ['C1 · 2 proveedores y justificación válida → se envía', [PL, CP], J],
+    C2: ['C2 · solo Pinturas Lima SAC → HIRE_INSUFFICIENT_QUOTES', [PL], J],
+    C3: ['C3 · 2 cotizaciones de Pinturas Lima SAC → HIRE_INSUFFICIENT_QUOTES', [PL, PL2], J],
+    C4: ['C4 · "Mejor precio" (12) → HIRE_JUSTIFICATION_TOO_SHORT', [PL, CP], 'Mejor precio'],
+    C5: ['C5 · agregar cotización de S/ 0.00 → QUOTE_AMOUNT_NOT_POSITIVE', [PL], J, '0.00'],
+    C8: ['C8 · borde: "Menor precio y plazo" (20) → se envía', [PL, CP], 'Menor precio y plazo'],
+    C9: ['C9 · borde: "  Menor precio y plaz  " (19 sin extremos) → HIRE_JUSTIFICATION_TOO_SHORT', [PL, CP], '  Menor precio y plaz  '],
+    C10: ['C10 · borde: 3 cotizaciones, 2 de Pinturas Lima SAC → se envía', [PL, PL2, CP], J],
+    C12: ['C12 · agregar cotización de 18500.555 → AMOUNT_INVALID_PRECISION', [PL], J, '18500.555']
+  };
+  function loadCase(k) {
+    const [, quotes, just, amount] = CASES[k];
+    const h = { id: 'h-101', title: 'Pintura de fachada', status: 'Draft', created: '2026-10-20', justification: just,
+      quotes: quotes.map((q, i) => Object.assign({ id: 'q-101' + (i + 1) }, q)), history: [] };
+    persist(h);
+    clearPage();
+    if (amount) qform = { vendorId: 's-20587654321', amount, editing: null };
+    flash = { kind: 'info', title: `Caso ${k} cargado: "Pintura de fachada" está en Borrador`,
+      body: `<p>${esc(CASES[k][0])}</p>${rn('Datos de prueba de HU-012 · reemplaza h-101 en la sesión (Reiniciar datos lo deshace)')}` };
+    curId = 'h-101'; setState('draft');
+  }
+
+  // ---------- Estado de la página ----------
+  const P = new URLSearchParams(location.search);
+  let curId = P.get('id');
+  let flash = null, errors = [], errTitle = '', lockedBySrv = false;
+  let form = null;                                   // { title, just } escritos y no guardados (sección 1)
+  let qform = { vendorId: '', amount: '', editing: null };
+  let simFile = null;                                // archivo simulado (la banda) para no depender de tener un PDF a mano
+  function clearPage() { flash = null; errors = []; errTitle = ''; lockedBySrv = false; form = null; qform = { vendorId: '', amount: '', editing: null }; simFile = null; }
+
+  // Avisos que llegan por la URL tras un Post/Redirect/Get
+  if (P.get('saved') === '1') flash = { kind: 'success', title: 'Guardaste el borrador.', body: '<p>Ahora agrega las cotizaciones de los proveedores.</p>', role: 'status' };
+  const preSup = P.get('vendorId') ? vendorById(P.get('vendorId')) : null;
+  if (preSup) {
+    qform.vendorId = preSup.id;
+    flash = { kind: 'success', title: `Registraste al proveedor ${esc(preSup.name)}.`, role: 'status',
+      body: `<p>Ya está elegido en "Agregar cotización". No se creó una cuenta de usuario ni se envió una invitación.</p>${rn('RN-042 · HU-012 C7 · proveedor como dato, sin cuenta')}` };
+  }
+  if (P.has('saved') || P.has('vendorId')) { P.delete('saved'); P.delete('vendorId'); history.replaceState(null, '', '?' + P); }
+
+  // Escenario de cada estado del selector
+  const isNew = st => st === 'new' || st === 'reqTitle';
+  function virtualFrom(id, patch) { const base = byId(id) || clone(SEED.find(h => h.id === id)); return Object.assign(clone(base), patch, { _virtual: true }); }
+  function scenario(c) {
+    const s = baseScenario(c);
+    return lockedBySrv && s.mode === 'edit' ? { mode: 'locked', hire: s.hire } : s;
+  }
+  function baseScenario(c) {
+    const st = c.state;
+    if (isNew(st)) return { mode: 'new' };
+    if (st === 'rejected') {
+      let h = byId('h-101');
+      if (!(h && h.status === 'Draft' && h.rejected)) {
+        // h-101 tal como quedó tras el rechazo del seed (29/10/2026, F8 5a), antes de reenviarla
+        const seed = SEED.find(x => x.id === 'h-101');
+        h = virtualFrom('h-101', { status: 'Draft', rejected: seed.history[seed.history.length - 1].at.slice(0, 10), history: clone(seed.history), quotes: clone(seed.quotes) });
+        delete h.submitted;
+      }
+      return { mode: 'edit', hire: h };
+    }
+    if (st === 'submitted' || st === 'approved') {
+      const want = st === 'submitted' ? 'Submitted' : 'Approved';
+      let h = byId(curId);
+      if (!h || h.status !== want) h = hires.find(x => x.status === want) || virtualFrom('h-101', { status: want });
+      return { mode: 'locked', hire: h };
+    }
+    if (st === 'invalid' || st === 'reqQuote' || st === 'amountFormat') {
+      const h = byId('h-104') && byId('h-104').status === 'Draft' ? byId('h-104') : virtualFrom('h-104', { status: 'Draft' });
+      return { mode: 'edit', hire: h };
+    }
+    const h = byId(curId || 'h-104');                 // 'draft'
+    if (!h) return { mode: 'notfound' };
+    if (h.status !== 'Draft') return { mode: 'locked', hire: h };
+    return { mode: 'edit', hire: h };
+  }
+
+  // Requisitos de envío (RN-037 por RUC distintos, RN-038 sin espacios de los extremos)
+  function sendChecks(h) {
+    const distinct = new Set(h.quotes.map(q => q.ruc)).size, n = trimLen(h.justification);
+    return [
+      { ok: distinct >= 2, code: 'HIRE_INSUFFICIENT_QUOTES', id: 'h-quotes',
+        text: `Cotizaciones de al menos 2 proveedores distintos (${h.quotes.length === 1 ? '1 cotización' : h.quotes.length + ' cotizaciones'}, ${distinct === 1 ? '1 proveedor' : distinct + ' proveedores'})` },
+      { ok: n >= 20, code: 'HIRE_JUSTIFICATION_TOO_SHORT', id: 'f-just', text: `Justificación de al menos 20 caracteres (${n})` }
+    ];
+  }
+  function runSend(h) {
+    const ko = sendChecks(h).filter(k => !k.ok);
+    errors = ko.map(k => ({ id: k.id, code: k.code, msg: MSG[k.code] }));
+    errTitle = 'No pudimos enviar la contratación a la Junta Directiva';
+    return !ko.length;
+  }
+
+  // ---------- Vistas ----------
+  const req = '<span class="req">(obligatorio)</span>';
+  const errFor = id => errors.find(e => e.id === id);
+  const desc = (id, ...hints) => { const ids = hints.filter(Boolean); if (errFor(id)) ids.push(id + '-err');
+    return (ids.length ? ` aria-describedby="${ids.join(' ')}"` : '') + (errFor(id) ? ' aria-invalid="true"' : ''); };
+  const fe = id => errFor(id) ? `<div id="${id}-err">${fieldError(esc(errFor(id).msg))}</div>` : '';
+
+  function summary() {
+    if (!errors.length) return '';
+    const n = errors.length;
+    return alert('danger', errTitle, `<p>${n === 1 ? 'Corrige este dato:' : `Corrige estos ${n} datos:`}</p>
+      <ul>${errors.map(e => `<li>${e.id ? `<a href="#${e.id}" data-focus="${e.id}">${esc(e.msg)}</a>` : esc(e.msg)}${e.link || ''}</li>`).join('')}</ul>
+      ${rn('422 · ' + errors.map(e => e.code || 'sin código').join(' · ') + ' · se conservan los valores escritos, salvo el archivo')}`, 'alert');
+  }
+
+  function header(c, mode, h) {
+    const editing = mode !== 'new';
+    c.title = editing ? 'Editar contratación' : 'Nueva contratación';
+    return `<div class="head">
+      <a href="#" class="back" data-go="P-040" data-params="status=Draft">← Contrataciones</a>
+      <nav class="crumbs" aria-label="Migas"><ol><li><a href="#" data-go="P-010">Inicio</a></li><li><a href="#" data-go="P-040" data-params="status=Draft">Contrataciones</a></li>
+        ${editing && h ? `<li><a href="#" data-go="P-041" data-params="id=${h.id}">${esc(h.title)}</a></li>` : ''}<li aria-current="page">${c.title}</li></ol></nav>
+      <div class="title-row"><h1 class="page">${c.title}</h1>${statusBadge(h ? h.status : 'Draft')}</div>
+      ${editing && h ? `<p class="muted">${esc(h.title)} · creada el <time datetime="${h.created}" class="tnum">${fmtDate(h.created)}</time></p>` : ''}
+    </div>`;
+  }
+
+  function lockedView(c, h) {
+    let out = header(c, 'locked', h) + summary();
+    const st = lockedBySrv ? 'Submitted' : h.status;
+    out += alert('info', MSG.HIRE_NOT_EDITABLE(STATUS_IN_TEXT[st]),
+      `<p><a href="#" data-go="P-041" data-params="id=${h.id}">Ver el expediente de ${esc(h.title)}</a></p>
+       ${rn('RN-097 · HIRE_NOT_EDITABLE (422) · solo se edita en Borrador · la página no muestra formularios · HU-012 C6 / C11')}`);
+    return `<div class="content w48">${out}</div>`;
+  }
+
+  function notFoundView(c) {
+    c.title = 'No encontrado';
+    return `<div class="content read"><div class="page-state notfound">
+      <svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true"><circle cx="21" cy="21" r="13" fill="none" stroke="currentColor" stroke-width="3"/><path d="m31 31 11 11" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>
+      <h1 class="page">No encontramos lo que buscas</h1>
+      <p class="muted">Puede que el enlace esté mal escrito o que ya no exista.</p>
+      <div class="actions"><a href="#" class="btn btn-primary" data-go="home">Ir al inicio</a><a href="#" class="btn btn-secondary" data-go="P-040">Volver</a></div>
+      ${rn('P-091 · 404 · RN-103')}</div></div>`;
+  }
+
+  function section1(mode, h) {
+    const t = form ? form.title : (h ? h.title : ''), j = form ? form.just : (h ? h.justification : '');
+    const n = trimLen(j);
+    return `<form class="card step" id="f-data" method="post" action="/api/supplier-hires" novalidate>
+      <h2 id="h-data">1. Datos</h2>
+      <div class="field"><label for="f-title">Título ${req}</label>
+        <input class="input" type="text" id="f-title" name="title" maxlength="150" value="${esc(t)}"${desc('f-title')}>${fe('f-title')}
+        ${rn('RN-172 · FIELD_REQUIRED "Completa el título." · solo espacios cuenta como vacío')}</div>
+      <div class="field"><label for="f-just">Justificación de la elección <span class="req">(necesaria para enviar)</span></label>
+        <p class="hint" id="f-just-hint">Mínimo 20 caracteres. Explica por qué eliges a este proveedor.</p>
+        <textarea class="textarea" rows="5" id="f-just" name="justification"${desc('f-just', 'f-just-hint', 'f-just-count')}>${esc(j)}</textarea>
+        <p class="count tnum${n < 20 ? ' short' : ''}" id="f-just-count" aria-live="polite">${countText(n)}</p>${fe('f-just')}
+        ${rn('RN-038 · ≥ 20 caracteres sin contar los espacios del inicio y del final · se exige al enviar, no al guardar el borrador · 🧩 contador JS opcional')}</div>
+      <div><button class="btn btn-secondary btn-full" type="submit" id="btn-save">Guardar borrador</button></div>
+      ${mode === 'new' ? rn('POST /api/supplier-hires · estado inicial Draft (RN-096) · al guardar redirige a /supplier-hires/{id}/edit') : rn('PUT /api/supplier-hires/' + h.id + ' · solo en Draft (RN-097)')}
+    </form>`;
+  }
+  const countText = n => `${n} ${n === 1 ? 'carácter' : 'caracteres'}` + (n < 20 ? ` · faltan ${20 - n} para poder enviarla` : '');
+
+  function quotesTable(h) {
+    if (!h.quotes.length) return `<div class="empty">${ICON.doc}<p class="muted">Aún no hay cotizaciones.</p></div>`;
+    return `<div class="table-wrap"><table class="dt"><caption class="sr-only">Cotizaciones de ${esc(h.title)}</caption>
+      <thead><tr><th scope="col">Proveedor</th><th scope="col" class="num">Monto</th><th scope="col">Documento</th><th scope="col">Acción</th></tr></thead>
+      <tbody>${h.quotes.map(q => `<tr>
+        <td data-label="Proveedor"><span>${esc(q.supplier)}${q.natural ? ' ' + rn('⚠️ Q34 · persona natural') : ''}<span class="ruc tnum">RUC ${q.ruc}</span></span></td>
+        <td data-label="Monto" class="num">${money(q.amount)}</td>
+        <td data-label="Documento">${q.doc ? `<span>${esc(q.doc)}</span>` : '<span class="nodoc">Sin documento</span>'}</td>
+        <td data-label="Acción"><button type="button" class="btn btn-secondary btn-sm" data-editq="${q.id}" aria-label="Editar cotización de ${esc(q.supplier)} por ${money(q.amount)}">Editar</button></td></tr>`).join('')}</tbody></table></div>`;
+  }
+
+  function quoteForm(h) {
+    const editing = qform.editing ? h.quotes.find(q => q.id === qform.editing) : null;
+    const sups = suppliers();
+    const ret = encodeURIComponent(`/supplier-hires/${h.id}/edit`);
+    return `<form class="sub" id="f-quote" method="post" enctype="multipart/form-data" action="/api/supplier-hires/${h.id}/quotes${editing ? '/' + editing.id : ''}" novalidate>
+      <h3 id="h-qform" tabindex="-1">${editing ? `Editar cotización de ${esc(editing.supplier)}` : 'Agregar cotización'}</h3>
+      <div class="field"><label for="f-supplier">Proveedor ${req}</label>
+        <select class="select" id="f-supplier" name="vendorId"${desc('f-supplier', 'f-supplier-hint')}><option value="">Elige un proveedor</option>
+          ${sups.map(s => `<option value="${s.id}"${s.id === qform.vendorId ? ' selected' : ''}>${esc(s.name)} · RUC ${s.ruc}</option>`).join('')}</select>
+        <p class="hint" id="f-supplier-hint">¿No está en la lista? <a href="#" data-go="P-043" data-params="returnUrl=${ret}">Registrar proveedor</a></p>${fe('f-supplier')}
+        ${rn('P-043 con returnUrl=/supplier-hires/' + h.id + '/edit · vuelve con el proveedor elegido · RN-172 FIELD_REQUIRED "Elige el proveedor."')}</div>
+      <div class="field"><label for="f-amount">Monto ${req}</label>
+        <p class="hint" id="f-amount-hint">Hasta 2 decimales. Ejemplo: 1200.50</p>
+        <div class="money"><span aria-hidden="true">S/</span><input class="input tnum" type="text" id="f-amount" name="amount" inputmode="decimal" pattern="^\\d+([.]\\d{1,2})?$" value="${esc(qform.amount)}"${desc('f-amount', 'f-amount-hint')}></div>${fe('f-amount')}
+        ${rn('MoneyInput · RN-172 vacío (FIELD_REQUIRED "Completa el monto.") · RN-173 letras, coma decimal o separador de miles (AMOUNT_INVALID_FORMAT), antes de las reglas de monto · RN-093 hasta 2 decimales (AMOUNT_INVALID_PRECISION) · RN-100 monto > S/ 0.00 (QUOTE_AMOUNT_NOT_POSITIVE)')}</div>
+      <div class="field"><label for="f-doc">Documento (opcional)</label>
+        <p class="hint" id="f-doc-hint">PDF, JPG o PNG, máx. 10 MB.${errors.length ? ' Vuelve a elegir el archivo.' : ' Si hay un error, tendrás que volver a elegir el archivo.'}${editing && editing.doc ? ` Documento actual: ${esc(editing.doc)}. Elige otro solo si quieres reemplazarlo.` : ''}</p>
+        <input class="input" type="file" id="f-doc" name="document" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"${desc('f-doc', 'f-doc-hint')}>
+        ${simFile ? `<p class="simfile">Archivo elegido (simulado desde la banda): ${esc(simFile.name)} · ${(simFile.size / 1048576).toFixed(1)} MB</p>` : ''}${fe('f-doc')}
+        ${rn('FileInput ⚠️ Q28 (provisional) · RN-106 blob privado · RN-166 si falla la carga no se guarda la cotización')}</div>
+      <div class="actions"><button class="btn btn-secondary btn-full" type="submit" id="btn-quote">${editing ? 'Guardar cotización' : 'Agregar cotización'}</button>
+        ${editing ? '<button class="btn btn-link" type="button" data-cancelq>Cancelar la edición</button>' : ''}</div>
+    </form>`;
+  }
+
+  function section2(h) {
+    const e = errFor('h-quotes');
+    return `<section class="card step" aria-labelledby="h-quotes">
+      <h2 id="h-quotes" tabindex="-1">2. Cotizaciones</h2>${e ? fieldError(esc(e.msg)) : ''}
+      ${quotesTable(h)}
+      ${rn('RN-037 ⚠️ Q23 ⚠️ Q30 · se cuentan proveedores distintos (por RUC), no cotizaciones · POST/PUT …/quotes multipart')}
+      ${quoteForm(h)}</section>`;
+  }
+
+  function section3(h) {
+    const checks = sendChecks(h);
+    return `<section class="card step" aria-labelledby="h-send">
+      <h2 id="h-send">3. Enviar</h2>
+      <ul class="checklist" aria-label="Requisitos para enviar">${checks.map(k => `<li class="${k.ok ? 'ok' : 'ko'}">${k.ok ? ICON.ok : ICON.err}<span>${k.ok ? 'Cumple' : 'Falta'}: ${k.text}</span></li>`).join('')}</ul>
+      ${rn('Checklist con los datos guardados · RN-037 · RN-038')}
+      <form id="f-send" method="post" action="/api/supplier-hires/${h.id}/submission" novalidate>
+        <button class="btn btn-primary btn-full" type="submit" id="btn-send">Enviar a la Junta Directiva</button></form>
+      <p class="muted">Después de enviarla ya no podrás editarla, salvo que la Junta la rechace.</p>
+      ${rn('POST …/submission · Draft → Submitted (RN-096) · luego no editable (RN-097) · un rechazo la devuelve a Draft (RN-098)')}
+    </section>`;
+  }
+
+  function editView(c, mode, h) {
+    let out = header(c, mode, h) + summary();
+    if (flash) out += alert(flash.kind, flash.title, flash.body || '', flash.role);
+    const lastRej = h && h.rejected ? [...h.history].reverse().find(d => d.decision === 'Rejected') : null;
+    if (lastRej) out += alert('warning', `La Junta Directiva rechazó esta contratación: ${esc(lastRej.reason)}`,
+      `<p class="muted">Corrige lo que pide la Junta y vuelve a enviarla. El rechazo queda en el historial del expediente.</p>${rn('RN-098 · el rechazo devolvió la contratación a Borrador · F8 5b · HU-012 C14')}`);
+    if (c.state === 'invalid') out += rn('Estado "Error de validación": intento de envío de h-104 (1 proveedor). Su justificación "Filtraciones en A-901" tiene 21 caracteres y cumple RN-038 (VL-P041 obs. 2): para HIRE_JUSTIFICATION_TOO_SHORT usa los casos C4 o C9 de la banda');
+    if (c.state === 'reqTitle') out += rn('Estado "Falta el título": "Guardar borrador" con el título vacío → FIELD_REQUIRED (RN-172)');
+    if (c.state === 'reqQuote') out += rn('Estado "Cotización vacía": "Agregar cotización" sin proveedor ni monto → un FIELD_REQUIRED por campo (RN-172)');
+    if (c.state === 'amountFormat') out += rn('Estado "Monto con coma": "Agregar cotización" de Color Perú EIRL con "21,000.00" → AMOUNT_INVALID_FORMAT (RN-173)');
+    if (h && h._virtual) out += rn('Escenario simulado: se guarda en la sesión (hires-v1) cuando guardas, agregas una cotización o la envías');
+    out += section1(mode, h);
+    if (mode === 'new') {
+      out += `<section class="card step" aria-labelledby="h-quotes-new"><h2 id="h-quotes-new">2. Cotizaciones</h2>
+        <p class="muted">Podrás agregar las cotizaciones después de guardar el borrador.</p>${rn('Nueva → solo la sección 1 hasta guardar (necesita el id)')}</section>`;
+    } else {
+      out += section2(h) + section3(h);
+    }
+    return `<div class="content w48">${out}</div>`;
+  }
+
+  // ---------- Init ----------
+  const options = hires.map(h => `<option value="${h.id}">${esc(h.title)} · ${STATUS[h.status][1]}</option>`).join('');
+  const caseOptions = Object.keys(CASES).map(k => `<option value="${k}">${esc(CASES[k][0])}</option>`).join('');
+  const ctx = CH.init({
+    code: 'P-042', title: 'Crear o editar contratación', active: 'P-040',
+    roles: ['rosa', 'rosaRes', 'ana', 'luis', 'marco', 'carla', 'raul'],
+    states: [['new', 'Nueva'], ['draft', 'Editar borrador'], ['rejected', 'Rechazada → Borrador (h-101)'], ['invalid', 'Error de validación'],
+             ['reqTitle', 'Falta el título (FIELD_REQUIRED)'], ['reqQuote', 'Cotización vacía (FIELD_REQUIRED)'], ['amountFormat', 'Monto con coma (AMOUNT_INVALID_FORMAT)'],
+             ['submitted', 'Enviada (no editable)'], ['approved', 'Aprobada (no editable)'], ['loading', 'Cargando'], ['error', 'Error']],
+    extraControls: `<label for="hireSel" style="margin-top:var(--space-2)">Expediente (/edit)</label><select id="hireSel">${options}</select>
+      <label for="caseSel" style="margin-top:var(--space-2)">Caso de HU-012 (reemplaza "Pintura de fachada" en la sesión)</label>
+      <div style="display:flex;flex-wrap:wrap;gap:var(--space-2)"><select id="caseSel">${caseOptions}</select><button class="proto-btn" id="loadCase" type="button">Cargar caso</button></div>
+      <label for="srv" style="margin-top:var(--space-2)">Respuesta del servidor al guardar o enviar</label><select id="srv">
+        <option value="ok">200 · éxito</option><option value="notEditable">422 · HIRE_NOT_EDITABLE (ya se envió en otra pestaña)</option>
+        <option value="413">413 · ATTACHMENT_TOO_LARGE</option><option value="415">415 · ATTACHMENT_TYPE_NOT_ALLOWED</option></select>
+      <button class="proto-btn" id="simfile" type="button" style="margin-top:var(--space-2)">Simular archivo elegido: garantía en PDF (1.2 MB)</button>`,
+    route: c => {
+      if (isNew(c.state)) return '/supplier-hires/new';
+      const s = scenario(c); return `/supplier-hires/${s.hire ? s.hire.id : (curId || '?')}/edit`;
+    },
+    render(c) {
+      if (!c.persona.admin) {
+        c.title = 'Acceso denegado';
+        return CH.deniedView() + `<div class="content">${rn(c.roleKey === 'ana' ? 'HU-012 C13 · Ana (Owner) intenta crear "Mantenimiento de bombas" → 403 (P-090) · matriz H1 · R-Own ⛔' : 'Matriz H1 · solo el Administrator crea, edita y envía → 403 (P-090)')}</div>`;
+      }
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      if (c.state === 'invalid' && !c.data.init) { c.data.init = true; runSend(scenario(c).hire); }
+      if (c.state === 'reqTitle' && !c.data.init) {
+        c.data.init = true; form = { title: '   ', just: '' };
+        errors = [required('f-title')]; errTitle = 'No pudimos guardar el borrador';
+      }
+      if ((c.state === 'reqQuote' || c.state === 'amountFormat') && !c.data.init) {
+        c.data.init = true;
+        qform = c.state === 'reqQuote' ? { vendorId: '', amount: '', editing: null } : { vendorId: 's-20587654321', amount: '21,000.00', editing: null };
+        errors = (qform.vendorId ? [] : [required('f-supplier')]).concat([amountError(qform.amount.trim())]);
+        errTitle = 'No pudimos agregar la cotización';
+      }
+      const s = scenario(c);
+      if (s.mode === 'notfound') return notFoundView(c);
+      if (s.mode === 'locked') return lockedView(c, s.hire);
+      return editView(c, s.mode, s.hire);
+    }
+  });
+
+  const $id = id => document.getElementById(id);
+  function setState(st) { const r = $id('ch-st-' + st); if (r) r.checked = true; ctx.state = st; ctx.data = {}; syncUrl(); ctx.rerender(true); }
+  function syncUrl() {
+    const q = new URLSearchParams(location.search);
+    if (isNew(ctx.state)) q.delete('id'); else { const s = scenario(ctx); if (s.hire) q.set('id', s.hire.id); }
+    q.set('role', ctx.roleKey); q.delete('state');
+    history.replaceState(null, '', '?' + q);
+  }
+  // Estado inicial según ?id (edición) cuando no viene ?state
+  if (!P.get('state') && curId) {
+    const h = byId(curId);
+    const st = !h ? 'draft' : h.status === 'Submitted' ? 'submitted' : h.status === 'Approved' ? 'approved' : 'draft';
+    if ($id('ch-st-' + st)) { $id('ch-st-' + st).checked = true; ctx.state = st; ctx.rerender(); }
+  }
+  if (byId(curId)) $id('hireSel').value = curId; else $id('hireSel').value = 'h-104';
+
+  // ---------- Interacciones ----------
+  const srvMode = () => $id('srv').value;
+  const current = () => scenario(ctx).hire;
+  function readForm1() { const t = $id('f-title'), j = $id('f-just'); if (t && j) form = { title: t.value, just: j.value }; }
+  function readQuote() { const s = $id('f-supplier'), a = $id('f-amount'); if (s && a) Object.assign(qform, { vendorId: s.value, amount: a.value }); }
+  function lockBySrv() {
+    errors = [{ code: 'HIRE_NOT_EDITABLE', msg: MSG.HIRE_NOT_EDITABLE(STATUS_IN_TEXT.Submitted) }];
+    errTitle = 'No pudimos guardar los cambios'; lockedBySrv = true;
+  }
+
+  document.addEventListener('input', e => {
+    if (e.target.id === 'f-just') {
+      const n = trimLen(e.target.value), el = $id('f-just-count');
+      el.textContent = countText(n); el.classList.toggle('short', n < 20);
+    }
+  });
+
+  document.addEventListener('submit', e => {
+    const f = e.target;
+    if (!['f-data', 'f-quote', 'f-send'].includes(f.id)) return;
+    e.preventDefault();
+    const s = scenario(ctx), h = s.hire;
+    readForm1(); readQuote();
+    errors = []; flash = null;
+
+    // ---- Sección 1: Guardar borrador ----
+    if (f.id === 'f-data') {
+      if (!form.title.trim()) { errors = [required('f-title')]; errTitle = 'No pudimos guardar el borrador'; ctx.rerender(); return; }
+      CH.sending($id('btn-save'), 600, () => {
+        if (s.mode === 'new') {
+          const n = Math.max(...hires.map(x => parseInt(x.id.slice(2), 10) || 0)) + 1, id = 'h-' + n;
+          persist({ id, title: form.title.trim(), status: 'Draft', created: TODAY, justification: form.just, quotes: [], history: [] });
+          CH.go('P-042', 'id=' + id + '&saved=1');
+          return;
+        }
+        if (srvMode() === 'notEditable') { lockBySrv(); ctx.rerender(true); return; }
+        h.title = form.title.trim(); h.justification = form.just; persist(h); form = null;
+        flash = { kind: 'success', title: 'Guardaste el borrador.', role: 'status' };
+        ctx.rerender(true);
+      });
+      return;
+    }
+
+    // ---- Sección 2: Agregar o editar cotización ----
+    if (f.id === 'f-quote') {
+      const input = $id('f-doc'), file = (input.files && input.files[0]) || simFile;
+      const raw = qform.amount.trim();
+      if (!qform.vendorId) errors.push(required('f-supplier'));
+      const ae = amountError(raw); if (ae) errors.push(ae);
+      if (file) {
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
+        if (!ALLOWED_EXT.includes(ext) || srvMode() === '415') errors.push({ id: 'f-doc', code: 'ATTACHMENT_TYPE_NOT_ALLOWED', msg: MSG.ATTACHMENT_TYPE_NOT_ALLOWED });
+        else if (file.size > MAX_MB * 1048576 || srvMode() === '413') errors.push({ id: 'f-doc', code: 'ATTACHMENT_TOO_LARGE', msg: MSG.ATTACHMENT_TOO_LARGE });
+      }
+      errTitle = qform.editing ? 'No pudimos guardar la cotización' : 'No pudimos agregar la cotización';
+      if (errors.length) { simFile = null; ctx.rerender(); return; }
+      CH.sending($id('btn-quote'), 700, () => {
+        if (srvMode() === 'notEditable') { lockBySrv(); ctx.rerender(true); return; }
+        const sup = vendorById(qform.vendorId), amount = Math.round(Number(raw) * 100) / 100;
+        const data = { supplier: sup.name, ruc: sup.ruc, amount, natural: !!sup.natural };
+        if (!data.natural) delete data.natural;
+        let msg;
+        if (qform.editing) {
+          const q = h.quotes.find(x => x.id === qform.editing);
+          Object.assign(q, data); if (file) q.doc = file.name;
+          if (!sup.natural) delete q.natural;
+          msg = `Guardaste los cambios de la cotización de ${esc(sup.name)}${file ? ` con el documento ${esc(file.name)}` : ''}.`;
+        } else {
+          const base = h.id.slice(2);
+          let i = h.quotes.length + 1; while (h.quotes.some(q => q.id === `q-${base}${i}`)) i++;
+          h.quotes.push(Object.assign({ id: `q-${base}${i}` }, data, { doc: file ? file.name : null }));
+          msg = `Agregaste la cotización de ${esc(sup.name)} por ${money(amount)}.`;
+        }
+        persist(h);
+        qform = { vendorId: '', amount: '', editing: null }; simFile = null;
+        flash = { kind: 'success', title: msg, role: 'status' };
+        ctx.rerender(true);
+      });
+      return;
+    }
+
+    // ---- Sección 3: Enviar a la Junta Directiva ----
+    if (f.id === 'f-send') {
+      if (form && (form.title.trim() !== h.title || form.just !== h.justification)) {
+        flash = { kind: 'warning', title: 'Tienes cambios sin guardar en "1. Datos". Guarda el borrador antes de enviarla.', role: 'alert',
+          body: rn('🧩 aviso JS opcional · sin JS el envío usa lo guardado') };
+        ctx.rerender(); return;
+      }
+      if (!runSend(h)) {
+        errors.forEach(x => { if (x.code === 'HIRE_INSUFFICIENT_QUOTES') x.link = ' <a href="#f-supplier" data-focus="f-supplier">Agregar cotización</a>'; });
+        ctx.rerender(); return;
+      }
+      errors = [];
+      CH.sending($id('btn-send'), 800, () => {
+        if (srvMode() === 'notEditable') { lockBySrv(); ctx.rerender(true); return; }
+        h.status = 'Submitted'; h.submitted = TODAY; delete h.rejected;
+        persist(h);
+        CH.go('P-041', 'id=' + h.id + '&sent=1');
+      });
+    }
+  });
+
+  document.addEventListener('click', e => {
+    const t = e.target;
+    const fx = t.closest('[data-focus]');
+    if (fx) { e.preventDefault(); const el = $id(fx.dataset.focus); if (el) { el.focus(); el.scrollIntoView({ block: 'center' }); } return; }
+    const eq = t.closest('[data-editq]');
+    if (eq) {
+      const h = current(), q = h.quotes.find(x => x.id === eq.dataset.editq), sup = vendorByRuc(q.ruc);
+      readForm1(); errors = []; flash = null; simFile = null;
+      qform = { vendorId: sup ? sup.id : '', amount: q.amount.toFixed(2), editing: q.id };
+      ctx.rerender(); const hq = $id('h-qform'); if (hq) { hq.focus(); hq.scrollIntoView({ block: 'center' }); }
+      return;
+    }
+    if (t.closest('[data-cancelq]')) { readForm1(); errors = []; qform = { vendorId: '', amount: '', editing: null }; simFile = null; ctx.rerender(); return; }
+    if (t.id === 'loadCase') { loadCase($id('caseSel').value); return; }
+    if (t.id === 'simfile') {
+      const s = scenario(ctx);
+      if (s.mode !== 'edit') return;
+      readForm1(); readQuote();
+      simFile = { name: 'garantia-pinturas-lima-sac.pdf', size: 1.2 * 1048576 };
+      ctx.rerender(); const d = $id('f-doc'); if (d) d.scrollIntoView({ block: 'center' });
+    }
+  });
+
+  document.addEventListener('change', e => {
+    if (e.target.id === 'hireSel') {
+      curId = e.target.value; clearPage();
+      const h = byId(curId);
+      setState(h.status === 'Submitted' ? 'submitted' : h.status === 'Approved' ? 'approved' : 'draft');
+    }
+  });
+  // Cambiar de rol o de estado limpia avisos, errores y valores escritos (antes de que el shell vuelva a pintar)
+  document.addEventListener('change', e => {
+    if (e.target.id === 'ch-role' || e.target.name === 'ch-st') {
+      clearPage();
+      if (e.target.name === 'ch-st') setTimeout(syncUrl, 0);
+    }
+  }, true);
+  // "Reiniciar datos" del shell no conoce 'suppliers-v1': se borra aquí antes de recargar
+  document.addEventListener('click', e => { if (e.target.closest('[data-ch-reset]')) { try { sessionStorage.removeItem('ch:' + SUP_KEY); } catch (err) { } } }, true);
+})();
+</script>
+</body>
+</html>

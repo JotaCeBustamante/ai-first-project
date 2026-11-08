@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ficha de persona · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.content.mid{max-width:48rem}
+.sec-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:var(--space-3)}
+.sec-head .btn{flex:none}
+.occ-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-2)}
+.occ-list li{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);padding:var(--space-3) var(--space-4);background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:var(--radius-md)}
+.occ-list a{font-weight:700}
+.acc{display:flex;flex-direction:column;gap:var(--space-4)}
+.acc-state{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2) var(--space-3);margin:0}
+.inv-form{display:flex;flex-direction:column;gap:var(--space-4)}
+.inv-form .select{max-width:22rem}
+.mailbox{display:flex!important;flex-direction:column;gap:var(--space-1);font-family:inherit!important}
+.mailbox a{color:inherit;font-weight:700}
+.proto-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;margin-top:var(--space-2)}
+@container shell (max-width:37.49em){.sec-head .btn,.inv-form .btn{width:100%}}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script src="assets/registry-data.js"></script>
+<script>
+// P-054 · Ficha de persona e invitación — 09-ui-spec.md §3.7. Flujo F9 pasos 4–5 y F1 (paso previo del Administrator: el correo con el enlace).
+// HU-001, HU-001B. Reglas: RN-007 (cuentas solo por invitación), RN-110 (vence a los 7 días), RN-157 (vínculo iniciado),
+// RN-002 (NRO sin Tenant), RN-165 (un solo uso), RN-057/RN-146 ⏸ (sin DNI ni teléfono), RN-153, RN-103, RN-172 (FIELD_REQUIRED).
+// Decisión del autor (2026-11-08, ficha de P-053): toda persona, incluida la de portería, se registra antes en P-053 con un vínculo;
+// P-054 solo invita a personas ya registradas (no hay registro sin vínculo).
+(function () {
+  const { rn, alert, esc, fieldError } = CH;
+  const DEFAULT_ID = 'p-ana';
+  const MSG = {
+    OCCUPANCY_NOT_STARTED: 'El vínculo de esta persona aún no empieza. Podrás invitarla desde su fecha de inicio.',
+    OCCUPANCY_NOT_ACTIVE: 'Esta persona no tiene un vínculo vigente. Registra uno en el padrón antes de invitarla.',
+    OCCUPANCY_TENANT_NOT_ALLOWED: 'Un propietario no residente no puede tener un vínculo de inquilino.'
+  };
+  const ROLES = [['Resident', 'Residente'], ['NonResidentOwner', 'Propietario no residente'], ['Concierge', 'Portería']];
+  // Estado del prototipo → persona y estado de la cuenta que se muestra
+  const STATE_ID = { notStarted: 'p-sofiat', tenantNro: 'p-carla' };
+  let lastState = null;            // al elegir "Vínculo futuro" la fecha simulada pasa al 01/03/2027 (una sola vez)
+
+  function pick(c) {
+    const id = c.state === 'notfound' ? 'p-zz99' : (STATE_ID[c.state] || c.params.get('id') || DEFAULT_ID);
+    const base = REG.person(id);
+    if (!base) return { id, p: null };
+    const p = Object.assign({}, base), now = REG.asOf();
+    if (c.state === 'none' || c.state === 'tenantNro' || c.state === 'notStarted') Object.assign(p, { account: null, invitation: null });
+    if (c.state === 'pending') Object.assign(p, { account: null, invitation: { role: 'Resident', issuedAt: REG.addDaysDT(now, -1), expiresAt: REG.addDaysDT(now, 6) } });
+    if (c.state === 'expired') Object.assign(p, { account: null, invitation: { role: 'Resident', issuedAt: REG.addDaysDT(now, -10), expiresAt: REG.addDaysDT(now, -3) } });
+    if (c.state === 'active' && !p.account) Object.assign(p, { account: { roles: ['Resident'] }, invitation: null });
+    return { id, p };
+  }
+
+  // Simula POST /api/persons/{id}/invitations
+  function validateInvite(p, role) {
+    if (!role) return { code: 'FIELD_REQUIRED', msg: 'Elige el rol.' };     // RN-172 (el select siempre trae un rol elegido)
+    const os = REG.occOfPerson(p.id);
+    // RN-157: sus únicos vínculos vigentes son futuros y no tiene rol → 422 hasta la StartDate del primero
+    if (!REG.roles(p).length && !os.some(o => o.status === 'active') && os.some(o => o.status === 'future'))
+      return { code: 'OCCUPANCY_NOT_STARTED', msg: MSG.OCCUPANCY_NOT_STARTED };
+    // RN-175: sin vínculos activos ni futuros (solo terminados o ninguno) no se invita con ningún rol
+    if (!os.some(o => o.status === 'active' || o.status === 'future'))
+      return { code: 'OCCUPANCY_NOT_ACTIVE', msg: MSG.OCCUPANCY_NOT_ACTIVE };
+    // RN-002: como NonResidentOwner no puede tener vínculos Tenant
+    if (role === 'NonResidentOwner' && os.some(o => o.type === 'Tenant' && o.status !== 'ended'))
+      return { code: 'OCCUPANCY_TENANT_NOT_ALLOWED', msg: MSG.OCCUPANCY_TENANT_NOT_ALLOWED };
+    return null;
+  }
+
+  function mailbox(p, st, inv) {
+    const tk = REG.token(p, st);
+    const what = st === 'expired' ? 'Enlace de la invitación vencida' : st === 'active' ? 'Enlace de la invitación ya usada' : 'Enlace de un solo uso';
+    const extra = tk === 'inv-carla-ok' && p.id !== 'p-carla' ? ' (P-006 muestra la invitación de ejemplo de Carla Díaz)' : tk === 'k9F2xQ7mTb' ? ' (Ana ya tiene cuenta en otro condominio: P-006 le pide iniciar sesión)' : '';
+    return `<div class="rn always mailbox"><span>Buzón de prueba · solo desarrollo (PRINCIPIO-009). No es parte de la pantalla: el token viaja solo en el correo y la base guarda su hash.</span>
+      <span>Para: ${esc(p.email)}${inv ? ` · ${REG.ROLE[inv.role]} · emitida ${REG.fmtDT(inv.issuedAt)}` : ''}</span>
+      <span>${what}: <a href="#" data-go="P-006" data-params="token=${tk}">/invitations/${tk}</a>${extra}</span></div>`;
+  }
+
+  function inviteForm(c, p) {
+    const d = c.data, e = d.invErr;
+    const sel = d.role || 'Resident';
+    return `<form class="inv-form" method="post" action="/api/persons/${p.id}/invitations" id="f-invite" novalidate>
+      <div class="field"><label for="f-role">Rol</label>
+        <select class="select" id="f-role" name="role" aria-describedby="f-role-hint${e ? ' f-role-err' : ''}"${e ? ' aria-invalid="true"' : ''}>
+          ${ROLES.map(([v, t]) => `<option value="${v}"${v === sel ? ' selected' : ''}>${t}</option>`).join('')}</select>
+        ${e ? `<div id="f-role-err">${fieldError(esc(e.msg))}</div>` : ''}</div>
+      <div><button class="btn btn-primary" type="submit" id="btn-invite">Enviar invitación</button></div>
+      <p class="hint" id="f-role-hint">Le llegará un correo con un enlace de un solo uso que vence en 7 días.</p>
+      ${rn('RN-007 · RN-110 · vence a los 604,800 s · RN-157 OCCUPANCY_NOT_STARTED · RN-175 OCCUPANCY_NOT_ACTIVE · RN-002 OCCUPANCY_TENANT_NOT_ALLOWED')}
+      ${rn('Portería (Concierge): esta persona ya está registrada en el padrón con su vínculo (P-053); la invitación solo le da el rol. Decisión del autor 2026-11-08: P-054 solo invita a personas registradas; una persona de portería sin unidad no se registra en el MVP (limitación aceptada, no gap)')}</form>`;
+  }
+
+  function accountSection(c, p) {
+    const acc = REG.account(p), inv = acc.invitation;
+    let h = `<section class="sec acc" aria-labelledby="h-acc"><h2 id="h-acc">Cuenta</h2>`;
+    if (acc.status === 'none') {
+      h += `<p class="acc-state">${REG.accountBadge('none')}</p>${inviteForm(c, p)}`;
+    } else if (acc.status === 'pending') {
+      h += `<p class="acc-state">${REG.accountBadge('pending')}<span>Vence el ${REG.timeDT(inv.expiresAt)}</span></p>
+        <p class="muted">Rol: ${REG.ROLE[inv.role]}. La persona debe abrir el enlace del correo para crear su cuenta.</p>
+        ${rn('HU-001B · la ficha muestra "Invitación pendiente" con el vencimiento (emitida ' + REG.fmtDT(inv.issuedAt) + ' + 7 días)')}${mailbox(p, 'pending', inv)}`;
+    } else if (acc.status === 'expired') {
+      h += `<p class="acc-state">${REG.accountBadge('expired')}<span>Venció el ${REG.timeDT(inv.expiresAt)}</span></p>
+        ${inviteForm(c, p)}${rn('RN-110 · el enlace vencido da INVITATION_EXPIRED en P-006; se reenvía con el mismo formulario')}${mailbox(p, 'expired', inv)}`;
+    } else {
+      const rs = acc.roles;
+      h += `<p class="acc-state">${REG.accountBadge('active')}<span>${rs.length ? rs.map(r => REG.ROLE[r]).join(' · ') : 'Sin rol en este condominio'}</span></p>`;
+      if (!rs.length) h += `<p class="muted">Su último vínculo terminó y se le retiró el rol.</p>${inviteForm(c, p)}
+        ${rn('RN-060 · ⚠️ la spec no define cómo devolver el rol a una cuenta existente; el prototipo ofrece una invitación (RN-007, RN-121)')}`;
+      h += rn('RN-165 · una invitación ya aceptada no sirve otra vez') + mailbox(p, 'active', null);
+    }
+    return h + `</section>`;
+  }
+
+  // VL fila 158: si el vínculo empieza en el futuro, el texto de éxito no promete invitar ya (RN-157)
+  function nextInvite(os) {
+    if (os.some(o => o.status === 'active')) return 'Ya puedes invitarla.';
+    const f = os.filter(o => o.status === 'future').map(o => o.start).sort()[0];
+    return f ? `Podrás invitarla desde el ${CH.fmtDate(f)}.` : 'Ya puedes invitarla.';
+  }
+
+  function renderData(c, p) {
+    const d = c.data, reg = c.state === 'registered' ? '1' : c.params.get('registered');
+    const os = REG.sortOcc(REG.occOfPerson(p.id)), ret = REG.retention(p), audit = REG.auditOf(p.id);
+    c.title = p.name;
+
+    let h = '<div class="alerts">';
+    if (d.sent) h += alert('success', `Enviamos la invitación a ${esc(p.email)}.`, '', 'status') + rn('201 · F9 paso 5 · buzón de prueba con el enlace de un solo uso');
+    else if (reg === '1' || reg === 'reused') h += alert('success', `Registraste a ${esc(p.name)}. ${nextInvite(os)}`, '', 'status') +
+      rn(reg === 'reused' ? 'RN-132 · el correo era de una persona en periodo de retención: se reutilizó su ficha (mismo PersonId) y RN-131 anuló el plazo' : 'F9 paso 4 · P-053 → P-054 (PRG)');
+    else if (reg === 'occ') h += alert('success', 'Registraste el vínculo.', '', 'status') + rn('09 §3.7 P-054 · vuelta desde P-053 en modo persona existente');
+    h += '</div>';
+
+    h += `<div><nav class="crumbs" aria-label="Migas de pan"><ol><li><a href="#" data-go="P-050">Padrón</a></li><li aria-current="page">${esc(p.name)}</li></ol></nav>
+      <a href="#" class="back" data-go="P-050">← Padrón</a>
+      <h1 class="page">${esc(p.name)}</h1></div>`;
+    h += REG.asOfNote();
+    h += `<section class="card" aria-label="Datos de la persona"><dl class="dl"><dt>Correo</dt><dd>${esc(p.email)}</dd></dl>
+      <div class="actions">${rn('HU-001 · RN-057 ⚠️ Q18 · antes del consentimiento la ficha solo tiene nombre, correo y vínculos; sin DNI ni teléfono (RN-146 ⏸ ADR-0020)')}</div></section>`;
+
+    h += `<section class="sec" aria-labelledby="h-occ"><div class="sec-head"><h2 id="h-occ">Vínculos</h2>
+      <a href="#" class="btn btn-secondary" data-go="P-053" data-params="personId=${p.id}">Agregar vínculo</a></div>`;
+    if (os.length) {
+      h += `<ul class="occ-list">${os.map(o => `<li><a href="#" data-go="P-052" data-params="id=${o.unit.id}" class="tnum">${o.unit.code}</a>
+        <span aria-hidden="true">·</span>${REG.typeBadge(o.type)}<span aria-hidden="true">·</span>
+        <span>desde ${REG.timeD(o.start)}${o.end ? ` hasta ${REG.timeD(o.end)}` : ''}</span>
+        ${o.status !== 'active' ? REG.statusBadge(o) : ''}</li>`).join('')}</ul>`;
+    } else {
+      h += `<div class="empty">${CH.ICON.doc}<p class="muted">Esta persona no tiene vínculos con unidades.</p></div>`;
+      if (p.account && p.account.roles.includes('Concierge'))
+        h += rn('⚠️ Dato de ejemplo anterior a la decisión del autor del 2026-11-08: según la ficha de P-053, la persona de portería se registra con un vínculo antes de recibir su rol; el padrón ficticio no le asigna unidad');
+    }
+    if (ret) h += rn(`RN-005 · sin vínculos activos ni futuros y sin roles: plazo de retención hasta el ${CH.fmtDate(ret.until)}${ret.archived ? ' (vencido: se archiva)' : ''}`);
+    audit.forEach(a => { h += rn(`Auditoría RN-059 (la lee la Junta, matriz P7) · anterior: (vacío) · nuevo: ${a.after} · por ${a.by} · ${a.at}`); });
+    h += `</section>`;
+
+    h += accountSection(c, p);
+    return `<div class="content mid">${h}</div>`;
+  }
+
+  const ctx = CH.init({
+    code: 'P-054', title: 'Ficha de persona', active: 'P-050',
+    roles: ['rosa', 'rosaRes', 'marco', 'ana', 'raul'],
+    states: [['data', 'Con datos'], ['none', 'Sin cuenta'], ['pending', 'Invitación pendiente'], ['expired', 'Invitación vencida'], ['active', 'Cuenta activa'],
+      ['registered', 'Recién registrada'], ['notStarted', 'Vínculo futuro (Sofía, 01/03/2027)'], ['tenantNro', 'Inquilina invitada como NRO (Carla)'],
+      ['notfound', 'No encontrada (404)'], ['loading', 'Cargando'], ['error', 'Error']],
+    extraControls: `<div class="proto-actions"><span>Abrir ficha: </span>
+      <button class="proto-btn" type="button" data-person="p-ana">Ana</button> <button class="proto-btn" type="button" data-person="p-martin">Martín (pendiente)</button>
+      <button class="proto-btn" type="button" data-person="p-hector">Héctor (vencida)</button> <button class="proto-btn" type="button" data-person="p-gloria">Gloria (sin cuenta)</button>
+      <button class="proto-btn" type="button" data-person="p-sofiat">Sofía Torres (futuro)</button> <button class="proto-btn" type="button" data-person="p-carla">Carla</button>
+      <button class="proto-btn" type="button" data-person="p-luis">Luis (NRO)</button></div>${REG.asOfControl()}`,
+    route(c) { return '/registry/persons/' + pick(c).id; },
+    render(c) {
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      if (c.state !== lastState) { lastState = c.state; if (c.state === 'notStarted') { REG.setAsOf('2027-03-01T10:00'); REG.refresh(); } }
+      const pk = pick(c);
+      if (!pk.p) return REG.notFoundView(c, 'P-050');                        // RN-103: 404 antes que 403
+      // Matriz P6/R3: solo Administrator (Marco BoardMember intenta invitar a Ana → 403, HU-001B)
+      if (!c.persona.admin) { c.title = 'No tienes acceso a esta página'; return CH.deniedView(); }
+      // Estados que muestran la respuesta 422 del envío
+      if ((c.state === 'notStarted' || c.state === 'tenantNro') && !c.data.preset) {
+        c.data.preset = true; c.data.role = c.state === 'notStarted' ? 'Resident' : 'NonResidentOwner';
+        c.data.invErr = validateInvite(pk.p, c.data.role);
+      }
+      return renderData(c, pk.p);
+    },
+    afterRender(c) {
+      REG.syncAsOfControl();
+      const h = document.getElementById('nf-h1'); if (h) { h.focus(); return; }
+      if (c.data.invErr) { const r = document.getElementById('f-role'); if (r) r.focus(); }
+    }
+  });
+  REG.bindAsOf(ctx);
+
+  document.addEventListener('click', e => {
+    const b = e.target.closest('[data-person]');
+    if (b) { e.preventDefault(); CH.go('P-054', 'id=' + b.dataset.person); }
+  });
+
+  document.addEventListener('submit', e => {
+    if (e.target.id !== 'f-invite') return;
+    e.preventDefault();
+    const role = document.getElementById('f-role').value;
+    CH.sending(document.getElementById('btn-invite'), 700, () => {
+      const pk = pick(ctx), err = validateInvite(pk.p, role);
+      ctx.data.role = role;
+      if (err) { ctx.data.invErr = err; ctx.data.sent = false; ctx.rerender(); return; }   // 422: no se envía ningún correo
+      REG.invite(pk.p.id, role);
+      // Tras el 201, la ficha se vuelve a leer del servidor: "Con datos" con la invitación pendiente
+      const id = pk.p.id;
+      ctx.state = 'data'; const r = document.getElementById('ch-st-data'); if (r) r.checked = true;
+      ctx.data = { sent: true, preset: true };
+      try { const q = new URLSearchParams(location.search); q.set('id', id); q.delete('state'); q.delete('registered'); history.replaceState(null, '', '?' + q); } catch (x) { }
+      ctx.params = CH.params();
+      ctx.rerender();
+    });
+  });
+})();
+</script>
+</body>
+</html>

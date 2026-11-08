@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Iniciar sesión · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+#signin .btn-primary{width:100%}
+.signin-notes{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.proto-x{margin-top:var(--space-2)}
+.proto-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;margin-top:var(--space-2)}
+.proto-info{color:var(--proto-muted);margin:var(--space-2) 0 0;max-width:48rem}
+.proto-info b{color:var(--proto-fg)}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-001 · Iniciar sesión — 09-ui-spec.md §3.1. Flujos F2, F5, F13. Reglas: RN-111, RN-153, RN-113, RN-114, rate limit 10/min (429).
+(function () {
+  const { PERSONAS, ICON, rn, alert, esc } = CH;
+  const PASSWORD = 'LosOlivos-2026';                  // contraseña de prueba de todas las cuentas
+  const ACCOUNTS = {
+    'ana.quispe@example.pe': 'ana', 'carla.diaz@example.pe': 'carla', 'luis.rojas@example.pe': 'luis',
+    'marco.salazar@example.pe': 'marco', 'rosa.huaman@example.pe': 'rosa', 'raul.mendoza@example.pe': 'raul'
+  };
+  const emailOf = k => Object.keys(ACCOUNTS).find(e => ACCOUNTS[e] === k) || '';
+  const MSG_FAILED = 'No pudimos iniciar sesión con esos datos. Revisa tu correo, tu contraseña o tu código.';
+  const LOCK_MS = 900 * 1000, MAX_FAILS = 5, RATE = 10;
+  const NEXT = { MfaEnrollmentRequired: 'P-003', MfaRequired: 'P-002', CondominiumSelectionRequired: 'P-005', ConsentRequired: 'P-007' };
+
+  const fails = {};         // correo → { n, until }  (RN-111: 5 fallos → 900 s)
+  let hits = [];            // envíos del último minuto (rate limit 10/min)
+  let status = null;        // { kind:'failed' } | { kind:'429', secs }
+  let email = '';           // correo conservado tras un error
+  let offset = 0;           // "Avanzar 15 min"
+  let firstRender = true;
+  const now = () => Date.now() + offset;
+  const clock = t => new Date(t).toLocaleTimeString('es-PE', { hour12: false, timeZone: 'America/Lima' });
+
+  function view(c) {
+    const st = c.state, reason = c.params.get('reason');
+    if (st === 'error') { c.title = 'Algo salió mal'; return errorView(); }
+    c.title = 'Iniciar sesión';
+    const expired = !status && (st === 'expired' || (reason === 'expired' && st === 'empty'));
+    const s = status || (st === 'failed' ? { kind: 'failed' } : st === '429' ? { kind: '429', secs: 42 } : null);
+    const mail = status ? email : (['data', 'failed', '429', 'loading'].includes(st) ? emailOf(c.roleKey) : '');
+    const pwd = !status && (st === 'data' || st === 'loading') ? PASSWORD : '';
+    const busy = st === 'loading';
+
+    let h = `<h1 class="page">Iniciar sesión</h1>`;
+    if (expired) h += alert('info', 'Tu sesión se cerró por inactividad. Ingresa de nuevo.',
+      rn('RN-113 · 1,800 s sin actividad · RN-114 · 12 h desde el inicio → ?reason=expired&amp;returnUrl='));
+    if (s && s.kind === 'failed') h += alert('danger', MSG_FAILED,
+      rn('SIGN_IN_FAILED · RN-111 · RN-153 · mismo texto para correo sin cuenta, contraseña incorrecta o cuenta bloqueada · sin error por campo'), 'alert');
+    if (s && s.kind === '429') h += alert('danger', `Demasiados intentos. Espera ${s.secs} segundos e inténtalo de nuevo.`,
+      rn('429 · rate limit 10 envíos/min · segundos de Retry-After'), 'alert');
+    if (busy) h += `<p class="rn always">SSR: no hay estado de carga en el cliente. 🧩 JS opcional: el botón pasa a "Enviando…" (aria-disabled) para evitar dobles envíos.</p>`;
+
+    h += `<form class="form" id="signin" method="post" action="/api/auth/sign-in">
+      <div class="field"><label for="email">Correo electrónico <span class="req">(obligatorio)</span></label>
+        <input class="input" id="email" name="email" type="email" autocomplete="username" autocapitalize="off" spellcheck="false" required value="${esc(mail)}"></div>
+      <div class="field"><label for="password">Contraseña <span class="req">(obligatorio)</span></label>
+        <input class="input" id="password" name="password" type="password" autocomplete="current-password" required value="${esc(pwd)}"></div>
+      <button class="btn btn-primary" type="submit"${busy ? ' aria-disabled="true"' : ''}>${busy ? 'Enviando…' : 'Ingresar'}</button>
+    </form>
+    <p class="muted">¿No puedes ingresar? Comunícate con la administración.</p>
+    <div class="signin-notes">${rn('ADR-0020 · sin enlace de recuperación de contraseña')}${rn('Éxito según nextStep: P-003 · P-002 · P-005 · P-007 · returnUrl o P-010 (P-020 si es Concierge)')}</div>`;
+    return h;
+  }
+
+  function errorView() {
+    return `<div class="page-state">${ICON.big}<h1 class="page">Algo salió mal</h1>
+      <p style="margin:0">Algo salió mal. Inténtalo de nuevo en unos minutos.</p>
+      <p class="muted">Si el problema continúa, comparte este código con la administración: <span class="trace">00-7c1e9a04d2b84f6e9b3a51c8e2f07d19-3a9f5c21b7e04d18-01</span></p>
+      <button class="btn btn-primary" type="button" data-retry>Volver a intentar</button>${rn('§3.0.4 · error inesperado 500 con traceId')}</div>`;
+  }
+
+  // Banda: estado oculto al usuario (bloqueo, rate limit), útil para la demo
+  function info() {
+    const el = document.getElementById('sim-info'); if (!el) return;
+    const t = now();
+    const lines = Object.keys(fails).filter(m => fails[m].n || fails[m].until > t).map(m => {
+      const f = fails[m];
+      return `<b>${esc(m)}</b>: ${Math.min(f.n, MAX_FAILS)}/${MAX_FAILS} intentos fallidos${f.until > t ? ` · bloqueada hasta las ${clock(f.until - 1000)}, hora de este equipo (la pantalla no lo revela)` : ''}`;
+    });
+    const recent = hits.filter(x => t - x < 60000).length;
+    el.innerHTML = `Cuentas de prueba: el correo de cada persona (p. ej. <b>carla.diaz@example.pe</b>, <b>raul.mendoza@example.pe</b>) · contraseña <b>${PASSWORD}</b>. ` +
+      `Envíos en el último minuto: ${recent}/${RATE}.` + (lines.length ? '<br>' + lines.join('<br>') : '');
+  }
+
+  function attempt(btn, mail, pass) {
+    const t = now();
+    hits = hits.filter(x => t - x < 60000); hits.push(t);
+    email = mail;
+    if (hits.length > RATE) {
+      status = { kind: '429', secs: Math.max(1, Math.ceil((60000 - (t - hits[0])) / 1000)) };
+      info(); return ctx.rerender();
+    }
+    const key = ACCOUNTS[mail];
+    const acc = key ? (fails[mail] = fails[mail] || { n: 0, until: 0 }) : null;
+    if (acc && acc.until && t >= acc.until) { acc.n = 0; acc.until = 0; }   // RN-111: el bloqueo termina a los 900 s
+    const locked = !!(acc && acc.until > t);
+    if (!key || locked || pass !== PASSWORD) {
+      if (acc && !locked) { acc.n++; if (acc.n >= MAX_FAILS) acc.until = t + LOCK_MS; }
+      status = { kind: 'failed' };                                          // RN-153: misma respuesta en todos los casos
+      info(); return ctx.rerender();
+    }
+    acc.n = 0; status = null; info();
+    btn.removeAttribute('aria-disabled'); btn.textContent = 'Ingresar';
+    const p = PERSONAS[key];
+    ctx.roleKey = key; ctx.persona = p;
+    const forced = document.getElementById('next').value;
+    const step = forced !== 'auto' ? forced : ((p.admin || p.board) ? 'MfaRequired' : 'SignedIn');
+    if (NEXT[step]) return CH.go(NEXT[step]);                               // returnUrl viaja por P-002…P-007
+    CH.finishSignIn();                                                      // returnUrl válido, P-010 o P-020 (Concierge)
+  }
+
+  function setReturnUrl(v) {
+    if (v) ctx.params.set('returnUrl', v); else ctx.params.delete('returnUrl');
+    try { history.replaceState(null, '', location.pathname + (ctx.params.toString() ? '?' + ctx.params : '')); } catch (e) { }
+    ctx.rerender();
+  }
+
+  const ctx = CH.init({
+    code: 'P-001', title: 'Iniciar sesión', shell: 'auth', roleLabel: 'Quién inicia sesión',
+    roles: ['ana', 'carla', 'luis', 'marco', 'rosa', 'raul'],
+    states: [['empty', 'Inicial (vacío)'], ['data', 'Con datos'], ['expired', 'Sesión vencida'], ['failed', 'SIGN_IN_FAILED'],
+             ['429', 'Demasiados intentos (429)'], ['loading', 'Cargando'], ['error', 'Error']],
+    route: c => {
+      const q = new URLSearchParams();
+      const reason = c.state === 'expired' ? 'expired' : c.params.get('reason');
+      if (c.params.get('returnUrl')) q.set('returnUrl', c.params.get('returnUrl'));
+      if (reason) q.set('reason', reason);
+      return '/sign-in' + (q.toString() ? '?' + q : '');
+    },
+    extraControls: `<div class="proto-x"><label for="next">Siguiente paso tras credenciales correctas (nextStep)</label>
+        <select id="next">
+          <option value="auto">Según la persona (Adm/Junta → MFA; resto → entra)</option>
+          <option value="SignedIn">SignedIn → returnUrl o P-010 (P-020 Concierge)</option>
+          <option value="MfaRequired">MfaRequired → P-002</option>
+          <option value="MfaEnrollmentRequired">MfaEnrollmentRequired → P-003</option>
+          <option value="CondominiumSelectionRequired">CondominiumSelectionRequired → P-005</option>
+          <option value="ConsentRequired">ConsentRequired → P-007</option>
+        </select></div>
+      <div class="proto-x"><label for="ret">returnUrl de llegada</label>
+        <select id="ret">
+          <option value="">Ninguno → P-010 (P-020 si es Concierge)</option>
+          <option value="/reservations/r-8841">/reservations/r-8841 · sesión vencida en el detalle de una reserva</option>
+          <option value="/invitations/k9F2xQ7mTb">/invitations/k9F2xQ7mTb · invitación con cuenta existente (P-006, RN-122)</option>
+          <option value="https://otro-sitio.example/">https://otro-sitio.example/ · URL externa: se ignora → P-010</option>
+        </select></div>
+      <div class="proto-actions">
+        <button class="proto-btn" id="fill" type="button">Autocompletar credenciales de la persona</button>
+        <button class="proto-btn" id="unlock" type="button">Avanzar 15 min (fin del bloqueo)</button>
+        <button class="proto-btn" id="reset" type="button">Reiniciar intentos</button>
+      </div>
+      <p class="proto-info" id="sim-info"></p>`,
+    render: view,
+    afterRender(c) {
+      if (firstRender && ['empty', 'data', 'expired'].includes(c.state)) { const el = document.getElementById('email'); if (el) el.focus(); }
+      firstRender = false;
+    }
+  });
+  info();
+  const retSel = document.getElementById('ret');
+  if (!Array.from(retSel.options).some(o => o.value === (ctx.params.get('returnUrl') || ''))) {
+    retSel.insertAdjacentHTML('beforeend', `<option>${esc(ctx.params.get('returnUrl'))}</option>`);
+  }
+  retSel.value = ctx.params.get('returnUrl') || '';
+
+  document.addEventListener('submit', e => {
+    const f = e.target.closest('#signin'); if (!f) return;
+    e.preventDefault();
+    const btn = f.querySelector('button[type="submit"]');
+    if (btn.getAttribute('aria-disabled') === 'true') return;
+    const mail = f.email.value.trim().toLowerCase(), pass = f.password.value;
+    CH.sending(btn, 700, () => attempt(btn, mail, pass));
+  });
+
+  document.addEventListener('click', e => {
+    const id = e.target.id;
+    if (e.target.closest('[data-retry]')) {
+      const r = document.getElementById('ch-st-empty'); r.checked = true; ctx.state = 'empty'; status = null; ctx.rerender(true);
+    } else if (id === 'fill') {
+      const m = document.getElementById('email'), p = document.getElementById('password');
+      if (m && p) { m.value = emailOf(ctx.roleKey); p.value = PASSWORD; document.querySelector('#signin button').focus(); }
+    } else if (id === 'unlock') { offset += LOCK_MS; info(); }
+    else if (id === 'reset') { Object.keys(fails).forEach(k => delete fails[k]); hits = []; status = null; email = ''; info(); ctx.rerender(); }
+  });
+
+  // Cambiar de persona o de estado limpia el resultado del último envío
+  document.addEventListener('change', e => { if (e.target.id === 'ch-role' || e.target.name === 'ch-st') { status = null; email = ''; } }, true);
+  document.addEventListener('change', e => { if (e.target.id === 'ret') setReturnUrl(e.target.value); });
+})();
+</script>
+</body>
+</html>

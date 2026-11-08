@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Detalle de unidad · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.sec-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:var(--space-3)}
+.sec-head .btn{flex:none}
+.occ-table td a{font-weight:600}
+.prev summary{min-height:44px;display:inline-flex;align-items:center;font-weight:600;cursor:pointer;color:var(--color-primary)}
+.prev[open] summary{margin-bottom:var(--space-3)}
+.note{margin:0;color:var(--color-text-muted)}
+.proto-x{margin-top:var(--space-2)}
+@container shell (max-width:37.49em){.sec-head .btn{width:100%}}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script src="assets/registry-data.js"></script>
+<script>
+// P-052 · Detalle de unidad — 09-ui-spec.md §3.7. Flujo F9 pasos 2–3. HU-001.
+// Reglas: RN-001 (Owner/Tenant), RN-002, RN-077 (si hay inquilino activo, el propietario no reserva), RN-157 (vínculo futuro), RN-103.
+(function () {
+  const { ICON, rn, alert, esc } = CH;
+  const DEFAULT_ID = 'u-a502';
+  // Unidades representativas por estado del prototipo ("Con datos" usa ?id=)
+  const STATE_ID = { empty: 'u-a101', rented: 'u-a301', future: 'u-a305' };
+
+  function pick(c) {
+    const id = c.state === 'notfound' ? 'u-z999' : (STATE_ID[c.state] || c.params.get('id') || DEFAULT_ID);
+    return { id, u: REG.unit(id) };
+  }
+
+  function table(list, caption, withNote) {
+    return `<div class="table-wrap"><table class="dt occ-table"><caption class="sr-only">${caption}</caption>
+      <thead><tr><th scope="col">Persona</th><th scope="col">Tipo</th><th scope="col">Desde</th><th scope="col">Hasta</th><th scope="col">Estado</th></tr></thead>
+      <tbody>${list.map(o => {
+        const p = o.person, gone = p && REG.archived(p);
+        const who = !p ? '—' : gone ? '<span class="muted">Persona archivada</span>' : `<a href="#" data-go="P-054" data-params="id=${p.id}">${esc(p.name)}</a>`;
+        return `<tr><td data-label="Persona">${who}</td><td data-label="Tipo">${REG.typeBadge(o.type)}</td>
+          <td data-label="Desde">${REG.timeD(o.start)}</td>
+          <td data-label="Hasta">${o.end ? REG.timeD(o.end) : '<span aria-hidden="true">—</span><span class="sr-only">Sin fecha de fin</span>'}</td>
+          <td data-label="Estado">${REG.statusBadge(o)}</td></tr>`;
+      }).join('')}</tbody></table></div>${withNote || ''}`;
+  }
+
+  function renderData(c, u) {
+    const registered = c.state === 'registered' || c.params.get('registered') === '1';
+    const list = c.state === 'empty' ? [] : REG.sortOcc(REG.occOfUnit(u.id));
+    const current = list.filter(o => o.status !== 'ended'), ended = list.filter(o => o.status === 'ended');
+    const rented = current.some(o => o.status === 'active' && o.type === 'Tenant');
+    const future = current.some(o => o.status === 'future');
+    c.title = 'Unidad ' + u.code;
+
+    let h = '';
+    if (registered) h += `<div class="alerts">${alert('success', `Registraste la unidad ${u.code}.`, '', 'status')}${rn('F9 paso 2 · P-051 → P-052 de la unidad nueva (PRG)')}</div>`;
+    h += `<div><nav class="crumbs" aria-label="Migas de pan"><ol><li><a href="#" data-go="P-050">Padrón</a></li><li><a href="#" data-go="P-050" data-params="tower=${u.tower}">Torre ${esc(u.tower)}</a></li><li aria-current="page">Unidad ${u.code}</li></ol></nav>
+      <a href="#" class="back" data-go="P-050" data-params="tower=${u.tower}">← Torre ${esc(u.tower)}</a>
+      <h1 class="page">Unidad ${u.code}</h1></div>`;
+    h += REG.asOfNote();
+    if (rented) h += `<div>${alert('info', 'Unidad alquilada: solo su inquilino puede reservar.', '')}${rn('RN-077 · hay un vínculo Tenant activo: el propietario no reserva a nombre de esta unidad')}</div>`;
+
+    h += `<section class="sec" aria-labelledby="h-occ"><div class="sec-head"><h2 id="h-occ">Vínculos</h2>
+      ${list.length ? `<a href="#" class="btn btn-secondary" data-go="P-053" data-params="unitId=${u.id}">Vincular persona</a>` : ''}</div>`;
+    if (!list.length) {
+      h += `<div class="empty">${ICON.doc}<p class="muted">Esta unidad no tiene personas vinculadas.</p>
+        <a href="#" class="btn btn-primary" data-go="P-053" data-params="unitId=${u.id}">Vincular una persona</a></div>`;
+    } else {
+      if (current.length) h += table(current, `Vínculos de la unidad ${u.code}`,
+        future ? `<p class="note">Una persona con un vínculo que aún no empieza no puede reservar ni ser invitada hasta esa fecha.</p>${rn('RN-157 · HU-006B · activo: StartDate ≤ hoy y sin EndDate o EndDate ≥ hoy (America/Lima)')}` : '');
+      else h += `<div class="empty">${ICON.doc}<p class="muted">Esta unidad no tiene personas vinculadas.</p></div>`;
+      if (ended.length) h += `<details class="prev"><summary>Vínculos anteriores (${ended.length})</summary>${table(ended, `Vínculos anteriores de la unidad ${u.code}`)}</details>`;
+      h += rn('Orden: activos (propietarios antes que inquilinos), futuros, terminados · RN-001 OccupancyType Owner/Tenant');
+    }
+    h += `</section>`;
+    return `<div class="content detail">${h}</div>`;
+  }
+
+  const ctx = CH.init({
+    code: 'P-052', title: 'Detalle de unidad', active: 'P-050',
+    roles: ['rosa', 'rosaRes', 'marco', 'ana', 'raul'],
+    states: [['data', 'Con datos'], ['empty', 'Vacío (sin vínculos, A-101)'], ['rented', 'Unidad alquilada (A-301)'], ['future', 'Vínculo futuro (A-305)'],
+      ['registered', 'Recién registrada'], ['notfound', 'No encontrada (404)'], ['loading', 'Cargando'], ['error', 'Error']],
+    extraControls: `<div class="proto-x"><span>Abrir unidad: </span>
+      <button class="proto-btn" type="button" data-unit="u-a502">A-502</button> <button class="proto-btn" type="button" data-unit="u-a301">A-301</button>
+      <button class="proto-btn" type="button" data-unit="u-a305">A-305</button> <button class="proto-btn" type="button" data-unit="u-b1203">B-1203</button></div>${REG.asOfControl()}`,
+    route(c) { return '/registry/units/' + pick(c).id; },
+    render(c) {
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      const pk = pick(c);
+      if (!pk.u) return REG.notFoundView(c, 'P-050');                       // RN-103: 404 antes que 403
+      if (!c.persona.admin) { c.title = 'No tienes acceso a esta página'; return CH.deniedView(); }   // P-090 (matriz R3)
+      return renderData(c, pk.u);
+    },
+    afterRender() { REG.syncAsOfControl(); const h = document.getElementById('nf-h1'); if (h) h.focus(); }
+  });
+  REG.bindAsOf(ctx);
+
+  document.addEventListener('click', e => {
+    const b = e.target.closest('[data-unit]');
+    if (b) { e.preventDefault(); CH.go('P-052', 'id=' + b.dataset.unit); }
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mis reservas · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:var(--space-3) var(--space-4)}
+.rlist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-3)}
+.rcard{display:flex;flex-direction:column;gap:var(--space-1)}
+.rcard-top{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:var(--space-2) var(--space-4)}
+.rcard p{margin:0}
+.rcard .when{font-size:1.125rem}
+.rcard .more{margin-top:var(--space-2);min-height:44px;display:inline-flex;align-items:center;font-weight:600;width:fit-content}
+.rcard.is-new{border-left:4px solid var(--color-success)}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-014 · Mis reservas — 09-ui-spec.md §3.3. Flujo F4 (pasos 1 y 3). Reglas: RN-088, RN-085.
+(function () {
+  const { DATA, ICON, TODAY, rn, alert, esc, fmtDate, timeTag } = CH;
+  const NOW = CH.nowStamp();                    // hora simulada común (shell.js), por defecto 10:30
+  const WD = ['dom.', 'lun.', 'mar.', 'mié.', 'jue.', 'vie.', 'sáb.'];
+  const VIEWS = { upcoming: 'Próximas', history: 'Historial' };
+  const urlCancelled = CH.params().get('cancelled');  // regreso desde P-016 (PRG): ?cancelled=r-8841
+  let view = CH.params().get('view') === 'history' ? 'history' : 'upcoming';
+  let showAlert = true;                          // el aviso se ve solo en la primera carga tras P-016
+
+  const weekday = d => { const [y, m, dd] = d.split('-').map(Number); return WD[new Date(Date.UTC(y, m - 1, dd)).getUTCDay()]; };
+  const people = r => r.unitPeople != null ? r.unitPeople + (r.guests ? r.guests.length : (r.guestsCount || 0)) : null;
+  // RN-085: una reserva Confirmed cuya franja ya terminó se trata como Realizada, calculado al consultar
+  const statusOf = r => r.status === 'Confirmed' && (r.date + 'T' + r.end) <= NOW ? 'Completed' : r.status;
+  const byStartAsc = (a, b) => (a.date + a.start).localeCompare(b.date + b.start);
+
+  // Reservas de las unidades de la persona; cancelledId simula la cancelación hecha en P-016 por el anfitrión
+  function mine(p, cancelledId) {
+    return DATA.reservations.filter(r => p.units.includes(r.unit)).map(r => {
+      const x = Object.assign({}, r);
+      // Si viene de P-016 la reserva ya llega Cancelled (CH.patchReservation); si no, se simula aquí
+      if (x.id === cancelledId && statusOf(x) === 'Confirmed')
+        Object.assign(x, { status: 'Cancelled', cancelledBy: 'host', cancelledAt: TODAY + ' ' + CH.NOW, justCancelled: true });
+      else if (x.id === cancelledId && x.status === 'Cancelled') x.justCancelled = true;
+      x.st = statusOf(x);
+      return x;
+    });
+  }
+  const firstUpcomingId = p => { const u = mine(p, null).filter(r => r.st === 'Confirmed').sort(byStartAsc)[0]; return u ? u.id : null; };
+
+  function card(r) {
+    const n = people(r);
+    let cancel = '';
+    if (r.st === 'Cancelled') {
+      const at = r.cancelledAt ? ` el <time datetime="${r.cancelledAt.replace(' ', 'T')}:00-05:00" class="tnum">${fmtDate(r.cancelledAt.slice(0, 10))} ${r.cancelledAt.slice(11)}</time>` : '';
+      cancel = `<p class="muted">${r.cancelledBy === 'admin' ? 'Cancelada por la administración' : 'Cancelaste esta reserva'}${at}</p>`;
+    }
+    return `<li class="card rcard${r.justCancelled ? ' is-new' : ''}">
+      <div class="rcard-top"><h3>${esc(r.area)}</h3>${CH.resBadge(r.st)}</div>
+      <p class="when"><time datetime="${r.date}T${r.start}:00-05:00" class="tnum">${weekday(r.date)} ${fmtDate(r.date)} · ${r.start} – ${r.end}</time></p>
+      <p class="muted tnum">${r.unit}${n != null ? ` · ${n} ${n === 1 ? 'persona' : 'personas'}` : ''}</p>
+      ${cancel}
+      <a href="#" class="more" data-go="P-015" data-params="id=${r.id}">Ver detalle<span class="sr-only"> de ${esc(r.area)} ${fmtDate(r.date)}</span> →</a>
+    </li>`;
+  }
+
+  function renderData(c) {
+    const p = c.persona, empty = c.state === 'empty';
+    const cancelledId = c.state === 'cancelled' ? firstUpcomingId(p) : urlCancelled;
+    const list = empty ? [] : mine(p, cancelledId);
+    const done = list.find(r => r.justCancelled);
+    const up = list.filter(r => r.st === 'Confirmed').sort(byStartAsc);
+    const hist = list.filter(r => r.st !== 'Confirmed').sort((a, b) => byStartAsc(b, a));
+    const items = view === 'upcoming' ? up : hist;
+
+    let h = `<div class="head"><h1 class="page">Mis reservas</h1>
+      <a href="#" class="btn btn-primary btn-sm" data-go="P-011">Reservar</a></div>`;
+    if (done && showAlert) {
+      h += alert('success', 'Cancelaste tu reserva',
+        `<p>${esc(done.area)} · ${done.unit} · ${timeTag(done)}. Tus invitados ya no figurarán en portería.</p>` +
+        (view === 'upcoming' ? `<p>La reserva ahora aparece en el <a href="?view=history" data-view="history">historial</a>.</p>` : ''), 'status') +
+        rn('F4 paso 3 · P-016 → P-014 con Alert success (role="status", Post/Redirect/Get)');
+    }
+    h += `<nav aria-label="Vista de reservas"><div class="tabs">` +
+      Object.entries(VIEWS).map(([k, t]) => `<a href="?view=${k}" data-view="${k}"${k === view ? ' aria-current="page"' : ''}>${t}</a>`).join('') +
+      `</div></nav>`;
+
+    h += `<section class="sec" aria-labelledby="h-list"><h2 id="h-list" class="sr-only">${VIEWS[view]}</h2>` +
+      rn(view === 'upcoming'
+        ? 'Próximas · Confirmed con inicio futuro o en curso · orden ascendente'
+        : 'Historial · Cancelled y Realizada · orden descendente · RN-088: las canceladas siguen visibles · RN-085: Realizada se calcula al consultar') +
+      (items.length
+        ? `<ul class="rlist">${items.map(card).join('')}</ul>` + rn('Pagination · 20 por página; con una sola página no se muestra')
+        : `<div class="empty">${ICON.cal}<p class="muted">${view === 'upcoming' ? 'No tienes reservas próximas.' : 'Aún no tienes reservas anteriores.'}</p>` +
+          (view === 'upcoming' ? `<a href="#" class="btn btn-secondary btn-sm" data-go="P-011">Reservar un área</a>` : '') + `</div>`) +
+      `</section>`;
+    return `<div class="content detail">${h}</div>`;
+  }
+
+  const ctx = CH.init({
+    code: 'P-014', title: 'Mis reservas',
+    roles: ['ana', 'carla', 'luis'],
+    states: [['data', 'Con datos'], ['empty', 'Vacío'], ['loading', 'Cargando'], ['error', 'Error'], ['cancelled', 'Tras cancelar (F4)']],
+    route: () => `/reservations?view=${view}`,
+    render(c) {
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      c.title = 'Mis reservas';
+      return renderData(c);
+    }
+  });
+
+  // Pestañas: en la app real son enlaces GET (?view=); aquí se simula sin recargar
+  document.addEventListener('click', e => {
+    const a = e.target.closest('a[data-view]'); if (!a) return;
+    e.preventDefault();
+    view = a.dataset.view; showAlert = false;
+    try { const q = new URLSearchParams(location.search); q.set('view', view); q.delete('cancelled'); history.replaceState(null, '', '?' + q); } catch (err) { }
+    ctx.rerender();
+    const cur = document.querySelector('.tabs [aria-current="page"]'); if (cur) cur.focus();
+  });
+  document.addEventListener('change', e => { if (e.target.id === 'ch-role' || e.target.name === 'ch-st') showAlert = true; }, true);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Prototipos · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+</head>
+<body>
+<main class="idx" id="main">
+  <div>
+    <p class="sec-label">CondoHub · Residencial Los Olivos</p>
+    <h1 class="page">Prototipos de pantallas del MVP</h1>
+    <p class="lead">Prototipos para validar con stakeholders, hechos a partir de los wireframes de <code>09-ui-spec.md</code>, sus design tokens y las reglas de <code>03-reglas-de-negocio.md</code>. No son código de producción. Cada uno tiene una banda de controles arriba para cambiar de rol, de estado (con datos, vacío, cargando, error) y para verlo en ancho de móvil.</p>
+  </div>
+  <section class="sec" aria-labelledby="h-flows">
+    <h2 id="h-flows">Por dónde empezar</h2>
+    <ul style="margin:0;padding-left:1.25rem;display:flex;flex-direction:column;gap:var(--space-2)">
+      <li><strong>Reservar un área (F3):</strong> P-010 → P-011 → P-012 → P-013 → P-015</li>
+      <li><strong>Cancelación y aviso (F4):</strong> P-014 → P-015 → P-016, o P-062 como Rosa → P-016, y el aviso en P-010</li>
+      <li><strong>Portería (F5):</strong> P-001 como Raúl → P-020</li>
+      <li><strong>Gastos (F7):</strong> P-010 → P-030 → P-031</li>
+      <li><strong>Inicio de sesión con MFA (F2):</strong> P-001 como Rosa o Marco → P-002 → P-010</li>
+      <li><strong>Primer inicio de sesión de la Junta (F2):</strong> P-001 como Marco con nextStep MfaEnrollmentRequired → P-003 → P-004 → P-005 → P-007 → P-010</li>
+      <li><strong>Residente con dos condominios (F13):</strong> P-001 con nextStep CondominiumSelectionRequired → P-005 (Torres del Parque) → P-007</li>
+      <li><strong>Padrón (F9):</strong> P-050 como Rosa → P-051 → P-052 → P-053 → P-054 (control "Fecha y hora simulada del padrón")</li>
+      <li><strong>Invitación (F1):</strong> P-054 → buzón de prueba → P-006 → P-007; con cuenta existente, P-006 → P-001 → P-006</li>
+      <li><strong>Registrar, anular y vincular un gasto (F6):</strong> P-030 como Rosa → P-032 → P-031 → P-033 / P-034. Para las fechas de las HU usa <code>?today=2026-11-20</code> (HU-010), <code>?today=2026-11-21&amp;now=09:00</code> (anular, HU-010B) y <code>?today=2026-12-04</code> (totales de noviembre, HU-011)</li>
+      <li><strong>Crear una contratación (F8):</strong> P-040 como Rosa → P-042 (P-043 si falta el proveedor) → P-041</li>
+      <li><strong>Configurar un área común:</strong> P-060 como Rosa → P-061 → P-011</li>
+      <li><strong>Consentimiento pendiente:</strong> P-007 como Carla → "No acepto" → cualquier pantalla redirige a P-007. La hora simulada se cambia con <code>?now=19:10</code></li>
+      <li><strong>Volver a la pantalla pedida:</strong> P-001 con returnUrl /reservations/r-8841 → P-015 tras iniciar sesión, pasando por MFA o consentimiento</li>
+      <li><strong>Contrataciones y decisión de la Junta (F8):</strong> P-010 como Marco → P-040 → P-041</li>
+    </ul>
+  </section>
+  <section class="sec" aria-labelledby="h-list">
+    <h2 id="h-list">Pantallas</h2>
+    <div class="idx-grid" id="list"></div>
+  </section>
+</main>
+<script src="assets/shell.js"></script>
+<script>
+  const DESC = {
+    'P-001': 'Correo y contraseña, mensaje neutro ante fallos (F13)',
+    'P-010': 'Avisos, contador de la Junta, próximas reservas y accesos por rol',
+    'P-011': 'Reglas de cada área antes de reservar',
+    'P-012': 'Disponibilidad, franja e invitados en un solo envío',
+    'P-013': 'Confirmación de la reserva',
+    'P-014': 'Próximas e historial',
+    'P-015': 'Datos de la reserva y lista de invitados',
+    'P-020': 'Reservas del día y marca de ingreso de invitados',
+    'P-030': 'Totales por categoría y gastos del mes',
+    'P-040': 'Lista de contrataciones por estado',
+    'P-041': 'Cotizaciones, historial y decisión de la Junta',
+    'P-002': 'Código de la app autenticadora o de recuperación',
+    'P-003': 'Enrolamiento obligatorio del TOTP: QR, clave y primer código',
+    'P-004': 'Los 10 códigos de recuperación, una sola vez',
+    'P-005': 'Elección del condominio de la sesión, sin valor por defecto',
+    'P-007': 'Consentimiento por condominio, transferencia a EE. UU. y rechazo',
+    'P-006': 'Crear la cuenta desde la invitación (o iniciar sesión si ya existe)',
+    'P-032': 'Registrar un gasto con su comprobante',
+    'P-033': 'Confirmación para anular un gasto con motivo',
+    'P-034': 'Vincular un gasto a una contratación aprobada',
+    'P-042': 'Crear o editar una contratación con cotizaciones y enviarla a la Junta',
+    'P-043': 'Registrar un proveedor y volver a la contratación',
+    'P-050': 'Torres y unidades del padrón (Administrator)',
+    'P-051': 'Registrar una unidad',
+    'P-052': 'Unidad con sus vínculos',
+    'P-053': 'Registrar una persona y su vínculo',
+    'P-054': 'Ficha de la persona e invitación',
+    'P-060': 'Áreas comunes configurables (Administrator)',
+    'P-061': 'Horario, duración, aforo, anticipación y cupo de un área',
+    'P-016': 'Confirmación antes de cancelar una reserva',
+    'P-031': 'Datos del gasto, comprobante, anulación y vínculo',
+    'P-062': 'Reservas de todo el condominio por día (Administrator)'
+  };
+  document.getElementById('list').innerHTML = Object.entries(CH.PAGES).map(([code, file]) =>
+    `<div class="card"><a href="${file}">${code} · ${CH.SCREENS[code][0]}</a><p class="muted">${DESC[code] || ''}</p><code class="muted">${CH.SCREENS[code][1]}</code></div>`).join('');
+</script>
+</body>
+</html>

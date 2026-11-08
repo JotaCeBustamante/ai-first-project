@@ -1,0 +1,607 @@
+<rol>
+Eres un Business Analyst Senior especializado en escritura de reglas de negocio para
+sistemas de software que serán implementados por agentes de IA autónomos. Dominas la
+notación EARS (Easy Approach to Requirements Syntax) y escribes reglas que son
+atómicas, verificables y libres de ambigüedad.
+</rol>
+<contexto>
+Proyecto: CondoHub
+Constitución del proyecto:
+---
+# Constitución del proyecto CondoHub
+
+> **Lectura obligatoria.** Todo agente de IA y toda persona que contribuya a CondoHub debe leer este documento antes de trabajar en el proyecto.
+> Estos principios **no son negociables**: ningún requisito, ticket ni instrucción puede violarlos. Si una tarea entra en conflicto con un principio, el trabajo se detiene y se escala a un humano.
+> Solo un humano puede modificar este archivo, mediante un PR aprobado y un ADR que lo justifique.
+
+**Contexto:** CondoHub es una plataforma multi-tenant que centraliza la gestión de edificios y condominios en Perú y conecta a residentes con administradores.
+**Versión:** 1.0, 2026-11-01
+
+---
+
+### PRINCIPIO-001: Idioma del código y de la interfaz
+
+El código fuente (identificadores, tablas, columnas, endpoints), los comentarios, los mensajes de commit y la documentación técnica se escriben en **inglés**. Todo texto visible para el usuario final está en **español de Perú** y se gestiona con archivos de recursos (`.resx` en .NET, archivos i18n en React Native), nunca como texto fijo en el código. **Única excepción:** este archivo (`00-constitucion.md`) se redacta en español.
+
+- **Ejemplo de cumplimiento:** la entidad `Resident` tiene la propiedad `UnitNumber`. El botón muestra `Resources.PayHistory_Title`, que en `es-PE.resx` vale "Historial de pagos".
+- **Ejemplo de violación:** se crea la tabla `Residentes` con la columna `NumeroDpto`, o un componente Blazor contiene `<button>Enviar solicitud</button>` escrito directamente.
+
+---
+
+### PRINCIPIO-002: Stack tecnológico y dependencias permitidas
+
+El stack oficial es **.NET 10** (backend y **Blazor en modo Auto**), **React Native** con TypeScript en modo `strict` para móvil, **SQL Server 2025** con **Entity Framework Core** como único ORM, desplegado en **Azure (región South Central US)**. El código vive en **GitHub** y el CI/CD corre en **GitHub Actions**. Están prohibidos **Dapper**, las dependencias con licencia **GPL o AGPL** (cualquier versión), las de pago y las **sin mantenimiento**, es decir, repositorios archivados o sin release en los últimos 12 meses. Las licencias permitidas son MIT, Apache-2.0, BSD-2/3-Clause y MS-PL.
+
+- **Ejemplo de cumplimiento:** las consultas se escriben con LINQ sobre un `DbContext` de EF Core. El escaneo de licencias del CI reporta solo paquetes MIT o Apache-2.0.
+- **Ejemplo de violación:** se agrega `Dapper` para "optimizar una consulta", o un paquete npm con licencia GPL-3.0 o cuyo último release es de hace 2 años.
+
+---
+
+### PRINCIPIO-003: Aislamiento estricto entre condominios (multi-tenancy)
+
+Toda entidad con datos de un condominio tiene la columna `CondominiumId`, y EF Core aplica un **global query filter** que restringe cada consulta al condominio del usuario autenticado. El uso de `IgnoreQueryFilters()` está prohibido fuera de procesos de plataforma documentados en un ADR. Cada endpoint que devuelva datos tiene un test de integración que demuestra que un usuario del condominio A recibe `403` o `404` al pedir recursos del condominio B.
+
+- **Ejemplo de cumplimiento:** `GET /api/visitors/{id}` con un `id` de otro condominio devuelve `404`, y el test `Visitors_CrossTenantAccess_Returns404` lo verifica en el CI.
+- **Ejemplo de violación:** un reporte de administración usa `IgnoreQueryFilters()` para "ver todas las deudas" y expone deudas de residentes de otros edificios.
+
+---
+
+### PRINCIPIO-004: Protección de datos personales según la Ley N.° 29733
+
+CondoHub cumple la **Ley N.° 29733** y su Reglamento (**D.S. 016-2024-JUS**):
+
+1. Se recoge el **consentimiento informado** del titular antes de tratar sus datos. Ese consentimiento incluye explícitamente la **transferencia internacional** al hosting en EE. UU. (Azure South Central US).
+2. El dato biométrico (**huella dactilar**) es un dato sensible y requiere un **consentimiento expreso y separado**. Solo se almacena la plantilla biométrica cifrada, nunca la imagen de la huella.
+3. Los datos de discapacidad se limitan a un indicador booleano `RequiresAccessibleElevator`. Está prohibido guardar diagnósticos.
+4. CondoHub **no almacena imágenes de videovigilancia**. Solo registra las solicitudes de visualización dirigidas a la administración (quién, cuándo y motivo).
+5. Retención: **90 días** después de terminada la relación (exresidentes) o de la visita (visitantes), un job automático diario (`DataRetentionJob`) mueve los datos de la base operativa a **almacenamiento frío**: Azure Blob Storage en **nivel Archive** con política de inmutabilidad, cifrado con AES-256-GCM. Ese archivo:
+   - se elimina de SQL Server una vez archivado;
+   - solo puede leerse con el rol `RetentionArchiveReader`, activado mediante elevación temporal con aprobación (Microsoft Entra PIM, máximo 8 horas);
+   - registra cada acceso en un log de auditoría inmutable;
+   - se elimina definitivamente al cumplirse **1 año** desde su archivado, mediante una política de ciclo de vida de Azure Storage.
+6. Las solicitudes **ARCO** se registran con su fecha de vencimiento legal y quedan visibles para el administrador. Una solicitud de cancelación aceptada se ejecuta también sobre el almacenamiento frío.
+
+- **Ejemplo de cumplimiento:** un test de integración simula 91 días transcurridos, ejecuta `DataRetentionJob` y verifica que el visitante ya no existe en SQL Server y que su registro está en el contenedor Archive. Un intento de lectura sin el rol `RetentionArchiveReader` devuelve `403`.
+- **Ejemplo de violación:** se agrega el campo `DisabilityDescription` "por si acaso", se habilita el registro de huella sin la pantalla de consentimiento específica, o los datos archivados se dejan en un nivel Hot legible por cualquier administrador.
+
+---
+
+### PRINCIPIO-005: Cifrado, transporte y autenticación
+
+- **En reposo:** todos los datos personales y de contacto se cifran a nivel de campo con **AES-256-GCM**, usando claves guardadas en **Azure Key Vault**. Esto incluye nombres, DNI o carné de extranjería, teléfono, correo, placas vehiculares, datos de visitantes y plantillas biométricas. La base de datos se cifra además con TDE.
+- **En tránsito:** **TLS 1.3** obligatorio entre servicios internos (API ↔ Azure SQL, Key Vault, Storage). Hacia los clientes se prefiere TLS 1.3 y se acepta **TLS 1.2 solo para dispositivos antiguos**, únicamente con cifrados ECDHE + AES-GCM o ChaCha20-Poly1305. TLS 1.0, TLS 1.1 y los cifrados CBC están prohibidos. Cuando el cliente no soporta TLS 1.3 (app móvil en Android < 10 o un navegador sin TLS 1.3), la aplicación muestra **en cada inicio de sesión** un aviso que recomienda actualizar el sistema operativo o usar un dispositivo más actual.
+- **Contraseñas:** hash con **Argon2id** usando una librería open source con licencia permitida (memoria ≥ 64 MiB, iteraciones ≥ 3, paralelismo ≥ 1).
+- **MFA obligatorio** para los roles Administrador y Junta Directiva.
+
+- **Ejemplo de cumplimiento:** la columna `PhoneNumber` contiene solo texto cifrado en la base de datos. Un escaneo con `testssl.sh` confirma que el endpoint rechaza TLS 1.1 y los cifrados CBC. En un emulador con Android 9 la app funciona y muestra el aviso de actualización.
+- **Ejemplo de violación:** el DNI se guarda en texto plano "porque se usa en búsquedas", un administrador puede iniciar sesión solo con contraseña, o se habilita TLS 1.0 "para compatibilidad".
+
+---
+
+### PRINCIPIO-006: Control de acceso por rol y mínimo privilegio
+
+Los roles son exactamente estos: **Administrator, BoardMember (Junta Directiva), Resident, NonResidentOwner (propietario no residente), Concierge (personal conserje) y Supplier (proveedor)**. Un Resident o NonResidentOwner ve **solo sus propias deudas, sus propios datos de contacto y los datos de contacto de la administración**, nunca datos de otros residentes. La matriz de permisos se mantiene en `docs/security/permissions-matrix.md` y cada fila tiene un test de autorización.
+
+- **Ejemplo de cumplimiento:** un Resident que llama a `GET /api/units/{otherUnitId}/debts` recibe `403`, y existe el test `Resident_CannotReadOtherUnitDebts`.
+- **Ejemplo de violación:** la pantalla "Directorio" muestra el teléfono de todos los vecinos a cualquier residente, o un Supplier puede consultar el registro de visitantes.
+
+---
+
+### PRINCIPIO-007: Los pagos se registran, nunca se procesan
+
+CondoHub **solo registra pagos ya realizados** (monto, fecha, concepto, unidad, comprobante adjunto). Está prohibido integrar pasarelas de pago y almacenar o procesar datos de tarjetas o credenciales bancarias. Los reclamos de los usuarios se gestionan mediante un **Libro de Reclamaciones virtual** conforme al Código de Protección y Defensa del Consumidor (**Ley N.° 29571**). La gestión de la junta de propietarios respeta la **Ley N.° 27157** de propiedad horizontal.
+
+- **Ejemplo de cumplimiento:** el administrador registra "Cuota noviembre – S/ 350.00 – Dpto. 502" y adjunta la constancia de transferencia.
+- **Ejemplo de violación:** se agrega un formulario con número de tarjeta y CVV, o se instala el SDK de una pasarela de pagos.
+
+---
+
+### PRINCIPIO-008: Datos reales y secretos fuera del código y de los entornos no productivos
+
+Ningún secreto (connection strings, API keys, certificados) se escribe en el código, en archivos de configuración versionados ni en los logs. Todos residen en **Azure Key Vault** y se leen mediante Managed Identity. Los logs nunca contienen datos personales en claro. Los entornos local, dev y staging usan **solo datos sintéticos** generados por seeders. Esta prohibición aplica **por igual a personas y a agentes de IA**: ningún dato real de producción, ni siquiera anonimizado a mano, sale de producción.
+
+- **Ejemplo de cumplimiento:** `appsettings.json` contiene `"KeyVaultUri"` y nada más. El CI ejecuta un escáner de secretos (gitleaks) que pasa sin hallazgos.
+- **Ejemplo de violación:** se hace commit de `appsettings.Development.json` con la contraseña de SQL, o se copia un backup de producción a dev "para reproducir un bug".
+
+---
+
+### PRINCIPIO-009: Acciones prohibidas y permitidas para agentes de IA
+
+Un agente de IA **NUNCA** puede:
+
+1. Hacer push directo a `main` ni mergear un PR sin aprobación humana.
+2. Ejecutar migraciones o comandos contra la base de datos de producción.
+3. Leer, copiar o enviar datos personales reales a servicios externos o a prompts.
+4. Añadir dependencias nuevas sin aprobación humana explícita en el PR.
+5. Modificar, omitir (`[Skip]`, `.skip`) o desactivar tests, linters, umbrales de cobertura o pasos del CI para que "pase".
+6. Escribir secretos, tokens o claves en el código o en los logs.
+7. Modificar este archivo (`00-constitucion.md`).
+8. Desplegar a producción.
+9. Enviar notificaciones, correos o mensajes reales a residentes.
+
+Un agente **sí puede**, de forma autónoma: crear ramas, ejecutar el proyecto y los tests en local, abrir PRs y desplegar en el entorno **dev**. Todo commit generado o asistido por IA incluye el trailer `Co-Authored-By: <nombre del agente>`.
+
+**Control técnico:** en GitHub, `main` tiene branch protection (PR obligatorio, 1 aprobación, status checks en verde, sin force push), y `00-constitucion.md` y `.github/workflows/` están en `CODEOWNERS` con propietarios humanos.
+
+- **Ejemplo de cumplimiento:** el agente abre un PR con el trailer `Co-Authored-By`, despliega en dev y solicita revisión humana. El CI rechaza cualquier PR de un agente que modifique `00-constitucion.md`.
+- **Ejemplo de violación:** el agente cambia el umbral de cobertura de 70 % a 50 % para que el pipeline pase, o ejecuta `dotnet ef database update` contra la cadena de producción.
+
+---
+
+### PRINCIPIO-010: Calidad, testing y flujo de trabajo
+
+- **Cobertura mínima:** 70 % de líneas en todo el proyecto y **90 % en el módulo de usuarios** (identidad, autenticación, roles). El CI falla por debajo de esos umbrales.
+- **Tests obligatorios en el CI (GitHub Actions):** unitarios e integración (xUnit), end-to-end (Playwright), accesibilidad automatizada (axe), seguridad (CodeQL, SAST) y dependencias (Dependabot o `dotnet list package --vulnerable` y `npm audit`, sin vulnerabilidades altas ni críticas).
+- **Pruebas de API:** colecciones Postman en `tests/postman/`, ejecutadas en el CI con Postman CLI.
+- **Flujo:** trunk-based con ramas de vida corta (máximo 2 días), PR con **1 aprobación humana** como mínimo y mensajes en formato **Conventional Commits** validados con commitlint.
+- **Estilo:** `.editorconfig` + `dotnet format` + analizadores Roslyn con `TreatWarningsAsErrors=true` en .NET; ESLint + Prettier en React Native.
+- **Rendimiento:** p95 de la API **< 500 ms** y LCP **< 2,5 s** en 4G.
+
+- **Ejemplo de cumplimiento:** el commit `feat(visitors): add QR check-in` pasa la cobertura, axe, las colecciones Postman y CodeQL, y se mergea con 1 aprobación.
+- **Ejemplo de violación:** un commit "cambios varios" que deja el módulo de usuarios en 82 % de cobertura y se mergea a `main` sin revisión.
+
+---
+
+### PRINCIPIO-011: Accesibilidad e inclusión
+
+La web (Blazor) y la app móvil cumplen **WCAG 2.1 nivel AA**. Además:
+
+- El texto es escalable hasta **200 %** sin pérdida de contenido ni scroll horizontal.
+- El tamaño base de fuente es de **16 px** como mínimo.
+- Los objetivos táctiles miden **44×44 px** como mínimo.
+- En React Native está prohibido `allowFontScaling={false}`.
+- La aplicación funciona en **celulares antiguos** con red 3G o 4G lenta.
+
+- **Ejemplo de cumplimiento:** axe reporta 0 violaciones AA en el CI, y la app se ve correctamente con la fuente del sistema al tamaño máximo.
+- **Ejemplo de violación:** un botón tiene un contraste de 3:1, o un ícono sin `aria-label` ni `accessibilityLabel`.
+
+---
+
+### PRINCIPIO-012: Documentación como código
+
+Toda la documentación vive en **Markdown dentro del repositorio** (`/docs`). Cada PR que cambie comportamiento actualiza, según corresponda:
+
+- el `README.md` del módulo;
+- el `CHANGELOG.md` (formato Keep a Changelog);
+- los diagramas en **Mermaid**;
+- la especificación **OpenAPI 3.1** versionada en `docs/api/openapi.json`, generada desde .NET; el CI falla si difiere de la API real;
+- las colecciones Postman en `tests/postman/`.
+
+Las decisiones de arquitectura se registran como **ADR** con la plantilla **MADR** en `docs/adr/NNNN-titulo-en-kebab-case.md`.
+
+- **Ejemplo de cumplimiento:** un PR que agrega `POST /api/visitors` incluye el endpoint en `openapi.json`, su request en la colección Postman, una entrada en el CHANGELOG y el diagrama de secuencia actualizado.
+- **Ejemplo de violación:** se cambia el contrato de un endpoint y `openapi.json` queda desactualizado, o se reemplaza EF Core por otra tecnología sin ADR.
+
+---
+Project Brief:
+---
+# CondoHub — Project Brief
+
+> **Fase:** Descubrimiento (Agente Analyst, BMAD)
+> **Fecha:** 2026-11-01
+> **Autor:** Jose Bustamante
+> **Contexto:** Ejercicio académico individual del Diploma en AI-First Software Architecture
+> **Documentos relacionados:** [05-preguntas-abiertas.md](05-preguntas-abiertas.md)
+
+**Convención de evidencia.** En este documento se distinguen tres tipos de afirmaciones:
+- **[Evidencia]** viene de la experiencia directa del autor como residente de un edificio multifamiliar en Lima.
+- **[Supuesto]** se considera razonable, pero no está validado.
+- **[Qn]** remite a la pregunta abierta correspondiente.
+
+---
+
+## 1. Problema y oportunidad
+
+### El problema
+
+Los edificios multifamiliares de Lima con 1 a 4 torres (hasta ~480 departamentos) gestionan su operación diaria con **correo, WhatsApp, Excel y registros en papel**. Ninguno de estos canales centraliza la información ni la hace visible para los residentes y la Junta.
+
+Esto genera dos dolores distintos:
+
+**1. Dolor operativo: lentitud y pérdida de solicitudes**
+- **[Evidencia]** Reservar un área común requiere 4 pasos manuales: (1) enviar la solicitud por correo, (2) esperar la confirmación, que llega aproximadamente un día después, (3) registrar a mano a los invitados en la recepción del piso 1 y (4) pedir el acceso el día del evento.
+- **[Evidencia]** Una avería puede tardar **hasta 3 días** en ser atendida.
+- **[Evidencia]** El administrador lleva la información de residentes, pagos, permisos y solicitudes en Excel. No puede responder todos los mensajes de WhatsApp y no tiene una vista centralizada y rápida.
+
+**2. Dolor de confianza: falta de transparencia**
+- **[Evidencia]** Los propietarios no ven por qué se eligió a un proveedor, qué cotizaciones se compararon, quién aprobó la contratación, en qué se usaron las cuotas de mantenimiento ni cómo avanzan las reparaciones.
+- **[Evidencia]** En el edificio de referencia hubo **2 cambios de empresa administradora** por falta de transparencia y malos tratos. El reclamo se discute en asambleas.
+
+### Qué se pierde hoy
+
+| Quién | Qué pierde |
+|---|---|
+| Residentes | ~1 día por reserva; hasta 3 días por avería; sin visibilidad de su dinero |
+| Administrador | Tiempo en canales dispersos; mensajes sin responder; deterioro de la relación con los propietarios |
+| Junta de Propietarios | Capacidad de supervisar presupuestos, proveedores y reparaciones |
+| Condominio | Historial y continuidad. Cada cambio de administradora puede llevarse la información, porque vive en su Excel **[Supuesto, Q9]** |
+
+### La oportunidad
+
+- La comunidad objetivo **ya está digitalizada**. La mayoría usa smartphone y hay pocos adultos mayores con dificultades tecnológicas **[Evidencia]**.
+- La portería ya cuenta con **una computadora y pantalla**, y el personal tiene smartphone **[Evidencia]**.
+- La falta de transparencia ya provoca **cambios de administración**. Esto sugiere que la Junta tiene una motivación real para exigir una solución.
+- El tamaño del mercado en Lima y la oferta de la competencia están **sin investigar** **[Q1, Q3]**.
+
+---
+
+## 2. Usuarios y segmentos objetivo
+
+### Segmento de mercado
+
+**Condominios de edificios multifamiliares en Lima Metropolitana**, de 1 a 4 torres de hasta 20 pisos con hasta 6 departamentos por piso (**~120 a ~480 unidades**), gestionados por **una empresa administradora** contratada por los propietarios.
+
+En general, una empresa administra un solo condominio, que puede tener varias torres, y no una cartera de condominios **[Evidencia]**.
+
+### Usuarios
+
+| Usuario | Quién es | Necesidad principal | Acceso a información sensible |
+|---|---|---|---|
+| **Empresa administradora** | Empresa elegida por los propietarios. Hoy trabaja en Excel | Tener en un solo lugar la información de residentes, pagos, permisos y solicitudes, con control rápido | Total (operativa) |
+| **Personal operativo** | Conserjes y porteros, en su mayoría empleados de la administradora. Usan smartphone y la PC de portería | Saber quién tiene una reserva, quiénes son los invitados y a quién dar acceso | Limitado a la operación diaria |
+| **Junta de Propietarios** | Propietarios elegidos para supervisar la gestión | Supervisar mantenimientos, presupuestos y proveedores; dar seguimiento a reparaciones | Total (supervisión) |
+| **Propietario** | Dueño de la unidad, viva o no en el edificio | Ver recibos, anuncios de juntas y uso de cuotas; reservar; reportar averías; votar | Presupuestos y decisiones |
+| **Inquilino** | ~30% de las unidades en el edificio de referencia **[Evidencia]** | Reservar áreas comunes, reportar averías y recibir anuncios | **No** ve presupuestos ni vota |
+
+### Diferencias relevantes entre segmentos
+
+- **Propietario frente a inquilino:** el derecho de voz y voto, y la visibilidad financiera, son exclusivos del propietario.
+- **Propietario que no reside en el edificio:** no está claro si participa activamente o delega en su inquilino **[Q14]**.
+- **Personal operativo:** se asume que es empleado de la administradora. Falta validar el caso de una empresa de seguridad tercerizada **[Q15]**.
+
+---
+
+## 3. Propuesta de valor
+
+### Lo que los usuarios no soltarían
+
+El autor identificó dos beneficios que harían que un propietario no quiera volver a la forma anterior:
+
+1. **Reservar un área común en minutos, no en un día.**
+2. **Ver en qué se gasta cada sol de la cuota de mantenimiento y por qué se eligió a cada proveedor.**
+
+### Propuesta por usuario
+
+| Usuario | Hoy | Con CondoHub |
+|---|---|---|
+| Propietario e inquilino | Correo, espera de ~1 día y trámite en recepción | Reserva completa en **10 minutos como máximo** |
+| Propietario e inquilino | Avería atendida en hasta 3 días, sin visibilidad | Avería atendida en **12 horas como máximo**, con seguimiento visible |
+| Propietario y Junta | Sin información sobre proveedores ni gastos | Visibilidad de comparaciones, votaciones, aprobaciones, uso de cuotas y avances |
+| Administradora | Excel, WhatsApp y mensajes sin responder | Información centralizada y menos carga de atención manual |
+| Condominio | El historial depende de la administradora de turno | El historial se conserva aunque cambie la administradora **[Supuesto, Q9]** |
+
+### Diferenciación
+
+- **Transparencia como valor central.** La propuesta no es solo operativa, sino que busca reconstruir la confianza entre propietarios y administración.
+- **Neutralidad.** CondoHub **no recibe ingresos de proveedores**, para que la plataforma no tenga incentivos en la elección de proveedores.
+- **Frente a la competencia:** no se puede afirmar diferenciación hasta investigar Komunidad, EdifiSoft, Condominios Perú y ComunidadFeliz **[Q1, Q2]**.
+
+---
+
+## 4. Modelo de negocio preliminar
+
+### Quién paga: modelo mixto
+
+| Canal | Descripción | Quién paga |
+|---|---|---|
+| **B2B: alianza con administradoras** | La administradora incorpora CondoHub en su servicio | La administradora, o lo traslada a la cuota |
+| **B2B2C: exigido por la Junta** | Si la administradora no está asociada, los propietarios lo exigen | Los propietarios, a través de la cuota de mantenimiento |
+
+Aún no se define cuál canal se activa primero **[Q6]**.
+
+### Precio y estimación de ingresos
+
+- **Precio de referencia:** **S/ 5 por unidad al mes** **[Supuesto: disposición a pagar del autor, Q5]**.
+- Equivale al **2.5%** de una cuota de mantenimiento de ~S/ 200 al mes **[Evidencia]**.
+
+| Escenario | Unidades | Ingreso mensual | Ingreso anual |
+|---|---|---|---|
+| 1 torre | ~120 | S/ 600 | S/ 7,200 |
+| 4 torres | ~480 | S/ 2,400 | S/ 28,800 |
+
+### Ingresos descartados
+
+- **Comisiones o pagos de proveedores:** descartados porque comprometen la neutralidad y la confianza.
+- **Publicidad:** descartada por la misma razón.
+- **Comisión por cobro de cuotas en línea (Yape, Plin):** sin definir **[Q8]**.
+
+### Tensión del modelo por resolver
+
+La administradora es la usuaria más intensiva, pero la transparencia la expone a más escrutinio por parte de los propietarios, que pueden reemplazarla. No está claro qué ganaría una administradora al asociarse **[Q7]**. Además, falta saber cuánto cobra una administradora para evaluar si S/ 5 por unidad es relevante frente a ese monto **[Q4]**.
+
+---
+
+## 5. Métricas de éxito (KPIs)
+
+**Horizonte de medición:** 6 meses desde el inicio de uso en un condominio.
+
+| # | KPI | Línea base actual | Meta | Cómo se mide |
+|---|---|---|---|---|
+| K1 | **Adopción mensual:** % de unidades con al menos un uso en el mes | 0% | **≥ 50%** | Unidades activas en el mes ÷ total de unidades |
+| K2 | **Tiempo para completar una reserva**, desde la solicitud hasta la confirmación con acceso habilitado | ~1 día (24 h) | **≤ 10 minutos** | Mediana entre la hora de solicitud y la hora de confirmación |
+| K3 | **Tiempo de atención de averías** | Hasta 3 días (72 h) | **≤ 12 horas** | Percentil 90 entre el reporte y la atención. Falta definir si "atención" es la primera respuesta o la solución **[Q12]** |
+| K4 | **Pasos manuales por reserva** | 4 (correo, confirmación, registro de invitados, solicitud de acceso) | **1** | Conteo de interacciones fuera de la plataforma |
+| K5 | **Contrataciones de proveedores con sustento visible** (comparación y aprobación accesibles para los propietarios) | 0% **[Supuesto]** | **100%** | Contrataciones con sustento visible ÷ total de contrataciones |
+| K6 | **Retención del condominio** como cliente | — | **≥ 1 renovación** al cumplir 6 meses | Condominios que renuevan ÷ condominios activos |
+
+**Métricas de seguimiento sin meta definida**, porque falta la línea base **[Q13]**:
+- Volumen mensual de mensajes de WhatsApp a la administración: se espera que disminuya.
+- Número de reclamos sobre transparencia registrados en actas de asamblea: se espera que disminuya.
+
+---
+
+## 6. Riesgos identificados y supuestos
+
+### Riesgos
+
+| # | Riesgo | Probabilidad | Impacto | Señal temprana |
+|---|---|---|---|---|
+| R1 | **Baja adopción.** Los vecinos siguen usando WhatsApp y correo. El autor lo identifica como el **riesgo principal** | Alta | Alto | K1 < 30% al tercer mes |
+| R2 | **Resistencia de la administradora.** La transparencia expone su gestión y puede no querer asociarse | Media | Alto | Rechazo en las entrevistas a administradoras |
+| R3 | **Competencia existente** que ya resuelve el problema a un precio similar o menor | Desconocida | Alto | Resultado de la investigación Q1 |
+| R4 | **Incumplimiento normativo** en datos personales (Ley N.° 29733) o en la validez de votaciones digitales (Ley N.° 27157) | Media | Alto | Revisión legal **[Q18, Q19]** |
+| R5 | **Disposición a pagar menor** que S/ 5 por unidad en otros edificios | Media | Medio | Encuesta a propietarios **[Q5]** |
+| R6 | **Pérdida del cliente** si cambia la administradora asociada | Media | Medio | Rotación de administradoras en la cartera |
+| R7 | **Alcance excesivo** para un proyecto individual de 16 semanas que incluye documentación y un prototipo funcional | Alta | Alto | Retraso en los entregables intermedios |
+
+### Supuestos clave por validar
+
+| # | Supuesto | Base actual | Validación |
+|---|---|---|---|
+| S1 | Los dolores del edificio de referencia se repiten en otros edificios del segmento | 1 edificio | Entrevistas en 3–5 edificios **[Q16]** |
+| S2 | Los propietarios pagarían S/ 5 por unidad al mes | Opinión del autor | Encuesta **[Q5]** |
+| S3 | La Junta tiene suficiente poder para exigir la herramienta a la administradora | 2 cambios de administración en el edificio de referencia | Entrevistas con Juntas |
+| S4 | La comunidad está lo bastante digitalizada para adoptar la herramienta | Observación del autor | Encuesta de uso de smartphone y apps |
+| S5 | Una reserva en 10 minutos es viable operativamente para la administración | Expectativa del autor | Validar con la administradora **[Q10]** |
+| S6 | El historial del condominio pertenece a los propietarios y no a la administradora | Ninguna | Revisión legal **[Q9]** |
+
+---
+
+## 7. Restricciones conocidas
+
+### Del proyecto académico
+
+| Restricción | Detalle |
+|---|---|
+| **Fecha de entrega** | 20 de febrero de 2027, ~16 semanas desde el 1 de noviembre de 2026 |
+| **Equipo** | Individual: una sola persona cubre todas las fases |
+| **Presupuesto** | Sin definir **[Q20]** |
+| **Entregable esperado** | Documentación **y prototipo funcional** **[Supuesto: probable según el autor; confirmar con las bases del Diploma, Q20]** |
+| **Validación con usuarios** | Acceso a un solo edificio de referencia. Las entrevistas a otros edificios dependen del tiempo disponible |
+
+### De negocio
+
+- **Neutralidad:** no se aceptan ingresos de proveedores ni publicidad.
+- **Precio de referencia:** S/ 5 por unidad al mes como máximo.
+- **Segmento acotado:** edificios multifamiliares en Lima de 1 a 4 torres (~120 a ~480 unidades).
+
+### Regulatorias (Perú)
+
+- **Ley N.° 29733**, Ley de Protección de Datos Personales, y su reglamento (D.S. N.° 016-2024-JUS): tratamiento de datos de residentes, consentimiento y posible inscripción del banco de datos **[Q18]**.
+- **Ley N.° 27157** y su reglamento: régimen de unidades inmobiliarias de propiedad exclusiva y común, Junta de Propietarios y validez de acuerdos y votaciones **[Q19]**.
+
+### De acceso y permisos
+
+- Los **inquilinos** no acceden a presupuestos ni votan.
+- Solo los **propietarios** y la **Junta** participan en decisiones y en la supervisión financiera.
+---
+Alcance:
+---
+# CondoHub — Alcance
+
+> **Fase:** Planificación (Agente PM, BMAD)
+> **Fecha:** 2026-11-01
+> **Autor:** Jose Bustamante
+> **Documentos relacionados:** [00-constitucion.md](00-constitucion.md) · [01-project-brief.md](01-project-brief.md) · [05-preguntas-abiertas.md](05-preguntas-abiertas.md)
+
+**Criterio rector.** El riesgo R7 (alcance excesivo) tiene probabilidad alta: una sola persona tiene 16 semanas, hasta el 20 de febrero de 2027, para entregar documentación y un prototipo funcional. Además, la constitución impone un piso de calidad, seguridad y cumplimiento que consume buena parte de ese tiempo. Por eso el MVP se limita a los **dos beneficios que un propietario no soltaría**: reservar en minutos y ver en qué se gasta cada sol. Todo lo demás espera.
+
+---
+
+## 0. Requisitos transversales (no entran en la priorización MoSCoW)
+
+Estos requisitos no son funcionalidades que se puedan priorizar. La constitución los vuelve obligatorios para **cada** funcionalidad que se construya, y son la razón principal de que el MVP sea tan pequeño.
+
+| Requisito | Principio | Impacto en el alcance |
+|---|---|---|
+| Aislamiento por `CondominiumId` con global query filter y test cross-tenant por endpoint | 003 | Se agrega un test de integración por cada endpoint |
+| Cifrado de campo AES-256-GCM con claves en Key Vault, TDE, TLS 1.3, Argon2id y MFA para Administrator y BoardMember | 005 | Las búsquedas por nombre o DNI no pueden usar `LIKE` sobre texto plano, así que hay que diseñar índices ciegos o búsquedas acotadas |
+| Textos en `es-PE` con archivos de recursos, sin texto fijo | 001 | Todo texto de UI pasa por `.resx` |
+| WCAG 2.1 AA, texto al 200 %, objetivos táctiles de 44×44 px y buen funcionamiento en 3G | 011 | axe en el CI; la UI tiene que ser liviana |
+| Cobertura del 70 % (90 % en usuarios), xUnit, Playwright, axe, CodeQL, Postman CLI, gitleaks y commitlint | 008, 010 | El pipeline completo se construye en la semana 1, no al final |
+| OpenAPI 3.1, colecciones Postman, CHANGELOG, Mermaid y ADR | 012 | Cada funcionalidad incluye su documentación |
+| Solo datos sintéticos fuera de producción | 008 | Hace falta un seeder de condominio sintético desde el inicio |
+
+**Bloqueantes para operar con datos reales.** El MVP puede **demostrarse** con datos sintéticos sin las piezas siguientes, pero **no puede usarse con residentes reales** hasta tenerlas: `DataRetentionJob` con archivo en Blob Archive inmutable y acceso por PIM (PRINCIPIO-004.5; la parte de PIM está diferida, ver D3 en la sección 7), registro de solicitudes ARCO con vencimiento legal (PRINCIPIO-004.6) y Libro de Reclamaciones virtual (PRINCIPIO-007, Ley N.° 29571). Si el piloto en el edificio de referencia entra en las 16 semanas, estas piezas pasan a ser obligatorias antes de ese piloto.
+
+---
+
+## 1. IN-SCOPE
+
+### Must have: el MVP (6)
+
+| # | Funcionalidad | Descripción | Usuarios | Origen |
+|---|---|---|---|---|
+| M1 | **Padrón del condominio** | El Administrator registra torres, unidades y personas, y define en cada unidad quién es propietario y quién es inquilino. | Administrator | Base de todo permiso |
+| M2 | **Acceso seguro, roles y consentimiento** | Los usuarios entran por invitación con contraseña Argon2id y MFA (TOTP) para Administrator y BoardMember, y aceptan un consentimiento informado que incluye la transferencia internacional antes de usar la plataforma. | Todos | PRINCIPIO-004, 005 y 006 |
+| M3 | **Reserva de áreas comunes en línea** | Propietarios e inquilinos ven la disponibilidad, reservan un área y registran a sus invitados en un solo flujo. La reserva se confirma automáticamente si cumple las reglas configuradas del área: horario, duración y aforo. | Resident, NonResidentOwner y Administrator (configura y cancela) | Beneficio 1, K2 y K4 |
+| M4 | **Vista de portería** | El Concierge ve en la PC de portería las reservas del día con la unidad, el área y la lista de invitados autorizados, y marca el ingreso. | Concierge | K4 (elimina el registro manual y la solicitud de acceso) |
+| M5 | **Registro de gastos de la cuota** | El Administrator registra cada gasto (monto, fecha, categoría, proveedor y comprobante adjunto), y propietarios y Junta ven el detalle y el total por categoría y por mes. | Administrator, BoardMember y NonResidentOwner o Resident propietario | Beneficio 2 |
+| M6 | **Contrataciones con sustento visible** | El Administrator registra cada contratación con sus cotizaciones comparadas y la justificación de la elección, la Junta la aprueba o la rechaza en la plataforma, y los propietarios ven todo el expediente. | Administrator, BoardMember y propietarios | Beneficio 2 y K5 |
+
+**Por qué estas seis y no otras.** M3–M4 resuelven el beneficio 1 completo: sin la vista de portería, la reserva en línea sigue necesitando los pasos manuales 3 y 4, y K4 no baja de 4 a 1. M5–M6 resuelven el beneficio 2. M1–M2 existen porque sin ellas no se puede saber quién es propietario y quién no, que es la frontera de acceso más importante del producto. Las averías, los pagos y los anuncios son valiosos, pero el edificio puede seguir funcionando con ellos fuera de la plataforma durante el MVP.
+
+### Should have: después del MVP (5)
+
+| # | Funcionalidad | Descripción | Origen |
+|---|---|---|---|
+| S1 | **Reporte y seguimiento de averías** | El residente reporta una avería con foto y categoría, y ve su estado (reportada, en atención, resuelta) con fecha y hora de cada cambio. | K3; depende de Q12 |
+| S2 | **Registro de pagos y estado de cuenta** | El Administrator registra los pagos ya realizados con su constancia adjunta, y cada propietario ve solo su propia deuda y sus propios pagos. | PRINCIPIO-006 y 007 |
+| S3 | **Anuncios y convocatorias** | El Administrator y la Junta publican anuncios y convocatorias a junta dentro de la plataforma, y pueden segmentarlos a todos los residentes o solo a propietarios. | Necesidad del propietario y del inquilino |
+| S4 | **Panel de indicadores del piloto** | El sistema calcula K1, K2, K4 y K5 (y K3 cuando exista S1) a partir de los datos de uso, sin mostrar datos de residentes individuales. | Medición de los KPIs del brief |
+| S5 | **Importación del padrón desde Excel (CSV)** | El Administrator carga torres, unidades y personas desde una plantilla CSV en lugar de registrarlas una por una. | Reduce la fricción de M1; el administrador hoy trabaja en Excel |
+
+### Could have: si sobra tiempo (4)
+
+| # | Funcionalidad | Descripción | Origen |
+|---|---|---|---|
+| C1 | **Notificaciones por correo** | El sistema envía un correo cuando se confirma una reserva, cambia el estado de una avería o hay una contratación por aprobar. | Adopción (R1) |
+| C2 | **Consultas no vinculantes a propietarios** | La Junta abre una consulta de opinión a los propietarios, con un aviso explícito de que el resultado no es un acuerdo formal de junta. | Q19; prepara una futura votación formal |
+| C3 | **Registro de solicitudes de videovigilancia** | El residente solicita a la administración ver una grabación, y queda registrado quién, cuándo y el motivo, sin almacenar imágenes. | PRINCIPIO-004.4 |
+| C4 | **Historial exportable del condominio** | La Junta exporta en un archivo el expediente de contrataciones y gastos para conservarlo si cambia la administradora. | Q9 y R6 |
+
+---
+
+## 2. OUT-OF-SCOPE (Won't have en esta versión)
+
+| # | Funcionalidad | Por qué queda fuera |
+|---|---|---|
+| W1 | **App móvil nativa (React Native)** | Construir y probar dos clientes en 16 semanas, en solitario, hace inviable el resto del alcance. La web en Blazor, diseñada para celular primero, cubre a una comunidad que ya usa smartphone. La constitución define el stack móvil para cuando se construya, pero no obliga a construirlo en esta versión. |
+| W2 | **Cobro en línea (pasarela, tarjetas, Yape o Plin)** | **Prohibido** por el PRINCIPIO-007: CondoHub registra pagos, nunca los procesa. Además, Q8 sigue abierta y las comisiones dañarían la confianza. |
+| W3 | **Votaciones formales y vinculantes de la Junta de Propietarios** | No se sabe si una votación digital es válida bajo la Ley N.° 27157 (Q19, R4). Un acuerdo inválido dañaría justamente la confianza que el producto quiere construir. La aprobación de contrataciones por la Junta Directiva (M6) sí entra, porque es un acto de gestión y no un acuerdo de asamblea. |
+| W4 | **Control de acceso biométrico o integración con hardware** (huella, torniquetes, cerraduras, QR en puerta) | La huella es un dato sensible que exige un consentimiento separado y almacenar plantillas cifradas (PRINCIPIO-004.2). El hardware no tiene presupuesto (Q20). La vista de portería (M4) basta para habilitar el acceso. |
+| W5 | **Almacenamiento o visualización de videovigilancia** | **Prohibido** por el PRINCIPIO-004.4. Como máximo se registra la solicitud (C3). |
+| W6 | **Portal de proveedores (rol Supplier con acceso)** | Los proveedores se registran como datos dentro de M6, sin necesidad de que inicien sesión. Abrirles la plataforma agrega superficie de ataque y una matriz de permisos más compleja. |
+| W7 | **Marketplace o directorio de proveedores recomendados, publicidad y comisiones** | Rompe la **neutralidad**, que es un diferenciador central del brief. |
+| W8 | **Directorio de vecinos o chat entre residentes** | **Prohibido** por el PRINCIPIO-006: un residente no ve datos de otros residentes. Además, competir con WhatsApp como chat no es la propuesta de valor. |
+| W9 | **Contabilidad completa, facturación electrónica SUNAT o emisión de recibos** | CondoHub registra gastos y pagos para dar transparencia, pero no reemplaza el sistema contable de la administradora. Sería otro producto. |
+| W10 | **Consola para administradoras con varios condominios** | El brief indica que una administradora gestiona un solo condominio. Una vista transversal requeriría `IgnoreQueryFilters()`, que el PRINCIPIO-003 prohíbe fuera de procesos documentados en un ADR. |
+| W11 | **Migración del historial real desde el Excel de la administradora** | Exige consentimiento de los titulares, limpieza de datos y definir de quién son los datos (Q9, Q18). Durante el proyecto solo se usan datos sintéticos (PRINCIPIO-008). |
+| W12 | **Registro general de visitantes** (sin una reserva asociada) | Amplía el tratamiento de datos de terceros y la retención a 90 días sin aportar a los dos beneficios centrales. En esta versión solo se registran los invitados de una reserva. |
+| W13 | **Idiomas distintos del español de Perú** | El segmento es Lima. Los archivos de recursos (PRINCIPIO-001) dejan la puerta abierta para el futuro sin costo adicional ahora. |
+
+---
+
+## 3. MVP
+
+Con solo el MVP, el **Administrator** carga el condominio (torres, unidades, propietarios e inquilinos), invita a los residentes y configura las áreas comunes con sus reglas. Un **propietario o inquilino** entra desde su celular, acepta el consentimiento y **reserva el salón de fiestas con su lista de invitados en un solo flujo, y recibe la confirmación en minutos** en lugar de esperar un día por correo. El día del evento, el **Concierge** ve la reserva y los invitados en la PC de portería y los deja pasar sin registros en papel ni llamadas. Al mismo tiempo, el Administrator registra cada gasto con su comprobante y cada contratación con sus cotizaciones y su justificación. La **Junta Directiva** aprueba esas contrataciones en la plataforma, y cualquier **propietario**, viva o no en el edificio, puede ver **en qué se gastó cada sol de la cuota y por qué se eligió a cada proveedor**, mientras que el inquilino no accede a esa información. Averías, pagos, anuncios y notificaciones siguen por los canales actuales hasta la siguiente iteración.
+
+---
+
+## 4. Supuestos
+
+| # | Supuesto | Si resulta falso… | Validación |
+|---|---|---|---|
+| SP1 | La administradora **registrará gastos y contrataciones** en la plataforma aunque eso la exponga a más escrutinio | M5 y M6 quedan vacíos y el beneficio 2 desaparece | Entrevista con la administradora del edificio de referencia (Q7, R2) |
+| SP2 | La administración acepta que una reserva que cumple las reglas se **confirme automáticamente**, sin aprobación manual | K2 ≤ 10 min es inalcanzable | Q10 |
+| SP3 | Las reglas de las áreas comunes (horario, duración, aforo, número de invitados) caben en una configuración simple por área | M3 necesita un motor de reglas y crece mucho | Revisar el reglamento interno (Q11) |
+| SP4 | Una **web optimizada para celular** basta para la adopción, sin necesidad de una app de tienda | La adopción cae (R1) y W1 tendría que adelantarse | Prueba de uso con 5 residentes del edificio de referencia |
+| SP5 | El personal de portería pertenece a la administradora y usará la PC de portería | M4 no se usa y vuelve el registro en papel | Q15 |
+| SP6 | La aprobación de una contratación por la **Junta Directiva** en la plataforma es un registro válido de gestión, sin requerir un acuerdo de asamblea | M6 se reduce a un registro informativo | Revisión normativa (Q19) |
+| SP7 | Los dolores del edificio de referencia se repiten en otros edificios del segmento | El producto resuelve un caso aislado | Entrevistas en 3–5 edificios (Q16) |
+| SP8 | Los propietarios pagarían S/ 5 por unidad al mes | El modelo de negocio no cierra | Encuesta (Q5) |
+| SP9 | El entregable académico es documentación más un prototipo funcional **demostrado con datos sintéticos** | Si se exige un piloto con usuarios reales, los bloqueantes de la sección 0 se vuelven Must | Bases del Diploma (Q20) |
+| SP10 | Los costos de Azure del proyecto caben en créditos gratuitos o de estudiante | Habría que recortar servicios o asumir costos | Q20 |
+| SP11 | El historial del condominio pertenece a los propietarios y no a la administradora | C4 pierde sentido y R6 se agrava | Revisión legal (Q9) |
+
+---
+
+## 5. Restricciones
+
+### De recursos
+
+- **Una sola persona** cubre producto, arquitectura, desarrollo, pruebas y documentación.
+- **Fecha de entrega:** 20 de febrero de 2027, ~16 semanas desde el 1 de noviembre de 2026, con feriados de fin de año de por medio.
+- **Presupuesto sin definir** (Q20). No se contratan servicios ni dependencias de pago (PRINCIPIO-002).
+- **Validación con usuarios** limitada a un edificio de referencia.
+
+### Técnicas (constitución)
+
+- Stack fijo: .NET 10, Blazor en modo Auto, SQL Server 2025 con EF Core como único ORM (Dapper prohibido) y Azure South Central US (PRINCIPIO-002).
+- Solo licencias MIT, Apache-2.0, BSD-2/3-Clause y MS-PL, con dependencias mantenidas. Cada dependencia nueva requiere aprobación humana en el PR (PRINCIPIO-009).
+- Rendimiento: p95 de la API < 500 ms y LCP < 2,5 s en 4G; la app también debe funcionar en 3G (PRINCIPIO-010 y 011).
+- Flujo trunk-based con ramas de máximo 2 días, PR con 1 aprobación humana y Conventional Commits.
+- **Identidad de los agentes (decidido el 2026-11-01):** GitHub no permite que una persona apruebe su propio PR. Por eso los agentes de IA abren sus PR desde una **GitHub App** propia del proyecto, y el autor humano los revisa y aprueba. La GitHub App no tiene permisos para aprobar ni mergear PR.
+
+### Legales y regulatorias
+
+- **Ley N.° 29733** y D.S. 016-2024-JUS: consentimiento previo con transferencia internacional, ARCO, retención de 90 días con archivo en frío y eliminación al año (PRINCIPIO-004). Falta definir quién es el titular del banco de datos (Q18).
+- **Ley N.° 27157:** limita lo que puede decidirse en la plataforma frente a la asamblea (Q19). Por eso W3 queda fuera.
+- **Ley N.° 29571:** Libro de Reclamaciones virtual antes de operar con usuarios reales (PRINCIPIO-007).
+- **No se procesan pagos** (PRINCIPIO-007).
+
+### De acceso y permisos
+
+- Seis roles exactos: Administrator, BoardMember, Resident, NonResidentOwner, Concierge y Supplier (PRINCIPIO-006).
+- Resident y NonResidentOwner ven **solo sus propios datos**. En M5 y M6 los gastos se muestran agregados por categoría y proveedor, **nunca** con morosidad ni datos de unidades específicas.
+- El inquilino no ve presupuestos ni gastos, y no aprueba ni vota.
+
+### De negocio
+
+- **Neutralidad:** sin ingresos de proveedores ni publicidad.
+- **Segmento:** edificios multifamiliares de Lima de 1 a 4 torres (~120 a ~480 unidades).
+
+---
+
+## 6. Dependencias
+
+### Servicios externos
+
+| Dependencia | Para qué | Riesgo o nota |
+|---|---|---|
+| **Azure App Service o Container Apps** | Hospedar la API y Blazor | Costo (Q20) |
+| **Azure SQL o SQL Server 2025** con TDE | Base de datos operativa | Confirmar que el servicio administrado ofrece las funciones de SQL Server 2025 en South Central US |
+| **Azure Key Vault** y **Managed Identity** | Claves de cifrado de campo y secretos | Sin Key Vault no se puede guardar ningún dato personal |
+| **Azure Blob Storage** (nivel Archive, inmutabilidad, ciclo de vida) | Archivo en frío de retención y comprobantes adjuntos | Los comprobantes de M5 y M6 van en un contenedor normal, separado del archivo de retención |
+| **Microsoft Entra ID con PIM** | Elevación temporal del rol `RetentionArchiveReader` | **Diferida (decidido el 2026-11-01).** PIM requiere la licencia Entra ID P2, que es de pago, así que no se implementa en esta versión. Ver la sección 7 |
+| **Servicio de correo** (por ejemplo, Azure Communication Services Email) | Invitaciones y recuperación de contraseña (M2); notificaciones (C1) | Los agentes no pueden enviar correos reales (PRINCIPIO-009); en dev se usa un buzón de prueba |
+| **Aplicación autenticadora TOTP** (Microsoft o Google Authenticator) | MFA para Administrator y BoardMember | Se elige TOTP en lugar de SMS para evitar costo por mensaje y otro proveedor |
+| **GitHub y GitHub Actions** | Repositorio, branch protection, CODEOWNERS y CI/CD | Incluye una GitHub App del proyecto para los PR de agentes (sección 5) |
+| **Herramientas del CI:** CodeQL, Dependabot, gitleaks, Playwright, axe, Postman CLI y commitlint | Puertas de calidad obligatorias (PRINCIPIO-010) | Deben estar listas en la semana 1 |
+| **Librería Argon2id** open source con licencia permitida | Hash de contraseñas | Elegirla mediante un ADR y verificar que esté mantenida (PRINCIPIO-002) |
+
+### Personas y decisiones
+
+| Dependencia | Para qué | Pregunta |
+|---|---|---|
+| Administradora del edificio de referencia | Aceptar la confirmación automática y registrar gastos y contrataciones | Q7, Q10 |
+| Junta del edificio de referencia | Patrocinar el uso y aprobar contrataciones en la plataforma | Q6, Q9 |
+| Reglamento interno del edificio | Reglas de las áreas comunes | Q11 |
+| Revisión legal | Titularidad del banco de datos y validez de aprobaciones digitales | Q18, Q19 |
+| Bases del Diploma | Confirmar el entregable y el presupuesto | Q20 |
+
+---
+
+## 7. Decisiones del autor sobre conflictos con la constitución
+
+La constitución indica que, ante un conflicto con un principio, el trabajo se detiene y se escala a un humano. Estos conflictos se escalaron y el autor los resolvió el 2026-11-01.
+
+| # | Conflicto | Decisión | Pendiente |
+|---|---|---|---|
+| D1 | **Propietario residente frente a inquilino.** El brief distingue al propietario del inquilino (el inquilino no ve presupuestos ni vota), pero la constitución define un solo rol `Resident` y prohíbe crear roles nuevos. | **Aprobada:** no se crea un rol nuevo. El vínculo persona–unidad (M1) lleva el atributo `OccupancyType` (`Owner` o `Tenant`). La autorización de M5 y M6 exige `NonResidentOwner`, o bien `Resident` con `OccupancyType = Owner`. ADR escrito: [0001-occupancy-type-instead-of-tenant-role.md](docs/adr/0001-occupancy-type-instead-of-tenant-role.md). Falta agregar la fila correspondiente, con sus tests, en `docs/security/permissions-matrix.md` |
+| D2 | **Aprobación de PR en un proyecto individual.** La constitución exige 1 aprobación humana por PR, y GitHub no permite autoaprobarse. | **Aprobada:** los agentes abren sus PR desde una GitHub App del proyecto, y el autor los aprueba. | Crear la GitHub App con permisos mínimos (ramas y PR, sin aprobar ni mergear) |
+| D3 | **Elevación con Entra PIM para `RetentionArchiveReader`** (PRINCIPIO-004.5). PIM requiere la licencia Entra ID P2, que es de pago. | **Diferida:** esta versión no implementa la lectura del archivo en frío ni la elevación con PIM. Esto no viola el principio mientras el producto opere solo con datos sintéticos, porque no hay datos reales archivados que leer. | Antes de operar con datos reales: contratar P2 o **enmendar el PRINCIPIO-004.5** mediante un PR y un ADR aprobados por el autor. Un agente no puede modificar la constitución (PRINCIPIO-009) |
+
+---
+</contexto>
+<tarea>
+Genera un catálogo de reglas de negocio para las funcionalidades del in-scope
+(priorizando Must y Should).
+Cada regla debe seguir este formato EXACTO:
+---
+**RN-[NNN]** | Categoría: [categoría] | Prioridad: [MUST/SHOULD/COULD] | Fuente:
+[quién define]
+Patrón EARS: [Ubiquitous / Event-driven / State-driven / Unwanted / Optional]
+[Regla escrita en notación EARS con DEBE / NO DEBE / PUEDE]
+✅ **Ejemplo:** [caso concreto que cumple la regla, con valores]
+❌ **Contraejemplo:** [caso concreto que viola la regla, con valores]
+---
+Categorías sugeridas: Registro, Crédito, Pagos, Notificaciones, Seguridad, Datos, UX.
+Requisitos:
+- MÍNIMO 15 reglas
+- Cada regla es ATÓMICA: una sola idea. Si tiene "y", dividir en dos.
+- Valores concretos: montos en S/, tiempos en segundos, fechas en formato ISO.
+- Palabras normativas: DEBE (obligatorio), NO DEBE (prohibido), PUEDE (opcional).
+- Cada regla DEBE tener ejemplo y contraejemplo con valores reales.
+Al final, genera también:
+- Un GLOSARIO con mínimo 15 términos del dominio (lenguaje ubicuo).
+</tarea>
+<restricciones>
+- NO uses adjetivos vagos: "rápido", "seguro", "fácil", "adecuado", "razonable".
+- NO escribas reglas compuestas (más de una condición → más de una regla).
+- Respeta la constitución: tus reglas no pueden contradecirla.
+- Si necesitas más información para escribir una regla, PREGUNTA antes de asumir.
+</restricciones>
+<formato>
+Catálogo en Markdown para 03-reglas-de-negocio.md y glosario para 04-glosario.md.
+</formato>

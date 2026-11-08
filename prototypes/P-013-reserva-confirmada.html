@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Reserva confirmada · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.confirm{display:flex;flex-direction:column;gap:var(--space-6);align-items:flex-start}
+.confirm-icon{color:var(--color-success)}
+.confirm-head{display:flex;flex-direction:column;gap:var(--space-3);align-items:flex-start}
+.confirm .card{width:100%}
+.confirm p.note{margin:0;font-size:1.125rem}
+.confirm .actions{width:100%}
+.confirm .actions .btn{flex:1 1 100%}
+@container shell (min-width:37.5em){.confirm .actions .btn{flex:0 0 auto}}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-013 · Reserva confirmada — 09-ui-spec.md §3.3. Reglas: RN-019 (confirmación automática), RN-163 (idempotencia), RN-103.
+(function () {
+  const { DATA, ICON, esc, fmtDate, rn, alert } = CH;
+  const BIG_OK = '<svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="20" fill="none" stroke="currentColor" stroke-width="3"/><path d="m15 24 6 6 12-13" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const DAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+
+  // Reservas recién creadas en P-012 que aún no están en CH.DATA (F3 y F11)
+  const LOCAL = {
+    'r-9010': { id: 'r-9010', area: 'Salón de fiestas', unit: 'A-502', host: 'Ana Quispe', date: '2026-12-12', start: '19:00', end: '23:00', status: 'Confirmed', unitPeople: 2, guestsCount: 38 },
+    'r-9011': { id: 'r-9011', area: 'Parrilla', unit: 'A-1104', host: 'Rosa Huamán', date: '2026-12-19', start: '12:00', end: '16:00', status: 'Confirmed', unitPeople: 3, guestsCount: 6, byAdmin: true }
+  };
+  const DEFAULT_ID = { ana: 'r-8841', carla: 'r-8933', luis: 'r-8955', rosa: 'r-9011', rosaRes: 'r-9011' };
+
+  const weekday = d => { const [y, m, dd] = d.split('-').map(Number); return DAYS[new Date(y, m - 1, dd).getDay()]; };
+  const guestsOf = r => r.guests ? r.guests.length : (r.guestsCount || 0);
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+  // Busca la reserva: CH.DATA → locales → id nuevo de P-012 (se arma con los parámetros o con r-9010)
+  function find(ctx) {
+    const p = ctx.params, id = p.get('id') || DEFAULT_ID[ctx.roleKey];
+    // Reserva recién creada en P-012 (sessionStorage 'reservation:<id>')
+    let fromP012 = null;
+    try { fromP012 = JSON.parse(CH.store.get('reservation:' + id)); } catch (e) { }
+    if (fromP012 && fromP012.id) return Object.assign({}, fromP012, { isNew: true });
+    const known = CH.reservation(id) || LOCAL[id];
+    if (known) return Object.assign({}, known);
+    const base = ctx.persona.admin ? LOCAL['r-9011'] : LOCAL['r-9010'];
+    const r = Object.assign({}, base, { id });
+    ['area', 'date', 'start', 'end', 'unit'].forEach(k => { if (p.get(k)) r[k] = p.get(k); });
+    if (p.get('unitPeople')) r.unitPeople = Number(p.get('unitPeople'));
+    if (p.get('guests')) r.guestsCount = Number(p.get('guests'));
+    if (!ctx.persona.admin && !p.get('unit')) { r.unit = ctx.persona.units[0]; r.host = ctx.persona.name; }
+    r.isNew = true;
+    return r;
+  }
+
+  function personasText(r, admin) {
+    const g = guestsOf(r), u = r.unitPeople, who = admin ? 'de la unidad' : 'de tu unidad';
+    if (!g) return `${u} (${who})`;
+    return `${u + g} (${u} ${who} y ${plural(g, 'invitado', 'invitados')})`;
+  }
+
+  function renderData(ctx, r) {
+    const admin = !!ctx.persona.admin;
+    const g = guestsOf(r);
+    const dl = `<dl class="dl">
+        <dt>Área</dt><dd>${esc(r.area)}</dd>
+        <dt>Unidad</dt><dd>${esc(r.unit)}</dd>
+        ${admin ? `<dt>Anfitrión</dt><dd>${esc(r.host)}</dd>` : ''}
+        <dt>Fecha</dt><dd><time datetime="${r.date}" class="tnum">${weekday(r.date)} ${fmtDate(r.date)}</time></dd>
+        <dt>Horario</dt><dd><time datetime="${r.date}T${r.start}:00-05:00" class="tnum">${r.start} – ${r.end}</time></dd>
+        <dt>Personas</dt><dd class="tnum">${personasText(r, admin)}</dd>
+      </dl>`;
+    let note, actions;
+    if (admin) {
+      note = `<p class="note">La unidad verá esta reserva en Mis reservas.</p>`;
+      actions = `<a href="#" class="btn btn-primary" data-go="P-062" data-params="date=${r.date}">Ver reservas del condominio</a>
+        <a href="#" class="btn btn-secondary" data-go="P-012">Reservar otra</a>`;
+    } else {
+      note = g
+        ? `<p class="note">Portería verá a tus invitados el día de la reserva. Puedes cambiar la lista hasta antes de las ${r.start}.</p>`
+        : `<p class="note">No registraste invitados. Puedes agregarlos hasta antes de las ${r.start}. <a href="#" data-go="P-015" data-params="id=${r.id}">Agregar invitados</a></p>`;
+      actions = `<a href="#" class="btn btn-primary" data-go="P-015" data-params="id=${r.id}">Ver mi reserva</a>
+        <a href="#" class="btn btn-secondary" data-go="home">Volver al inicio</a>`;
+    }
+    const h1 = admin ? `Reserva confirmada para ${esc(r.unit)}` : '¡Reserva confirmada!';
+    ctx.title = admin ? `Reserva confirmada para ${r.unit}` : 'Reserva confirmada';
+    return `<div class="content read"><div class="confirm">
+      <span class="confirm-icon">${BIG_OK}</span>
+      <div class="confirm-head">
+        <h1 class="page">${h1}</h1>
+        ${(ctx.state === 'replay' || (ctx.state === 'data' && ctx.params.get('replayed') === '1')) ? `<p class="muted">Si enviaste el formulario más de una vez, se guardó una sola reserva.</p>${rn('RN-163 · Idempotency-Replayed: true · no se dice "ya existía"')}` : ''}
+        ${CH.resBadge('Confirmed')}
+        ${rn('RN-019 · confirmada en el mismo envío, sin aprobación manual')}
+      </div>
+      <div class="card">${dl}</div>
+      ${note}
+      ${!admin ? rn('RN-086 · invitados editables solo antes del inicio de la franja') : rn('RN-076 · el Administrator reserva a nombre de una unidad')}
+      <div class="actions">${actions}</div>
+      ${rn('GET: recargar muestra lo mismo y no crea otra reserva')}
+    </div></div>`;
+  }
+
+  // Cancelada después de crearla: en la app el servidor redirige a P-015 sin página intermedia (VL fila 110)
+  function cancelledView(r) {
+    setTimeout(() => CH.go('P-015', 'id=' + encodeURIComponent(r.id) + '&state=cancelled'), 0);
+    return CH.loadingView('Redirección del servidor a P-015 (reserva cancelada).');
+  }
+
+  function notFoundView(ctx) {
+    ctx.title = 'No encontrado';
+    return `<div class="content read"><div class="page-state"><span style="color:var(--color-text-muted)">${ICON.big}</span>
+      <h1 class="page" tabindex="-1" id="nf-h1">No encontramos lo que buscas</h1>
+      <p class="muted">Puede que el enlace esté mal escrito o que ya no exista.</p>
+      <div class="actions"><a href="#" class="btn btn-primary btn-block" data-go="home">Ir al inicio</a>
+      <a href="#" class="btn btn-secondary btn-block" data-go="${ctx.persona.admin ? 'P-062' : 'P-014'}">Volver</a></div>
+      ${rn('P-091 · 404 · RN-103: igual si no existe o es de otro condominio')}</div></div>`;
+  }
+
+  CH.init({
+    code: 'P-013', title: 'Reserva confirmada', active: 'P-014',
+    roles: ['ana', 'carla', 'luis', 'rosa', 'rosaRes'],
+    states: [['data', 'Con datos'], ['empty', 'Vacío (sin invitados)'], ['replay', 'Reenvío idempotente'], ['cancelled', 'Cancelada después'],
+             ['denied', 'Otra unidad (403)'], ['notfound', 'No existe (404)'], ['loading', 'Cargando'], ['error', 'Error']],
+    route: c => `/reservations/${c.params.get('id') || DEFAULT_ID[c.roleKey]}/confirmed`,
+    render(c) {
+      if (c.state === 'loading') return CH.loadingView('SSR: P-013 es la respuesta del Post/Redirect/Get de P-012. Este estado solo se ve con red lenta.');
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      if (c.state === 'notfound') return notFoundView(c);
+      const r = find(c);
+      const own = c.persona.admin || c.persona.units.includes(r.unit);
+      if (c.state === 'denied' || !own) { c.title = 'Acceso denegado'; return CH.deniedView(); }
+      if (c.state === 'cancelled' || r.status === 'Cancelled') { c.title = 'Reserva cancelada'; return cancelledView(r); }
+      // La reserva nueva queda disponible para P-015 en esta sesión del navegador
+      if (c.state === 'data' && (r.isNew || LOCAL[r.id])) { const s = Object.assign({}, r); delete s.isNew; CH.store.set('res:' + r.id, JSON.stringify(s)); }
+      if (c.state === 'empty') { r.guests = []; delete r.guestsCount; }
+      return renderData(c, r);
+    },
+    afterRender() { const h = document.getElementById('nf-h1'); if (h) h.focus(); }
+  });
+})();
+</script>
+</body>
+</html>

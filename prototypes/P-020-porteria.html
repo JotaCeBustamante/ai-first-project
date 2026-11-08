@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Portería · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+[hidden]{display:none!important}
+#pt-msg:empty,#pt-poll:empty{display:contents}
+.pt-top{display:flex;flex-direction:column;gap:var(--space-3)}
+.pt-update{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--space-3)}
+.pt-update p{margin:0;font-size:1.125rem;display:flex;align-items:center;gap:var(--space-2)}
+.dot{width:12px;height:12px;border-radius:50%;background:var(--color-success);display:inline-block;flex:none}
+.dot-off{background:var(--color-danger)}
+.pt-search{max-width:32rem}
+.pt-search .muted{min-height:1.5rem}
+.pt-list{display:flex;flex-direction:column;gap:var(--space-4)}
+.pt-res{display:flex;flex-direction:column;gap:var(--space-4);scroll-margin-top:var(--space-4)}
+.pt-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:var(--space-2) var(--space-4)}
+.pt-count{margin:0;font-weight:600;color:var(--color-text-muted);font-size:1.125rem}
+.pt-res table.dt th,.pt-res table.dt td{height:56px}
+.pt-res .gname{font-size:1.125rem;font-weight:600}
+.pt-res .col-ing{width:12rem}
+.pt-res .col-act{width:13rem}
+.pt-notes{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+@container shell (max-width:37.49em){
+  .pt-res table.dt td{height:auto;min-height:48px;align-items:center}
+  .pt-res table.dt td.td-empty{display:none}
+}
+.proto-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;margin-top:var(--space-2)}
+.proto-info{color:var(--proto-muted);margin:var(--space-2) 0 0;max-width:56rem}
+.proto-info b{color:var(--proto-fg)}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-020 · Portería: reservas del día — 09-ui-spec.md §3.4. Flujo F5. Reglas: RN-026, RN-029, RN-030, RN-031, RN-158, RN-164.
+(function () {
+  const { DATA, ICON, TODAY, rn, alert, esc } = CH;
+  const pad = n => String(n).padStart(2, '0');
+  // Reloj simulado: la página se abre a las 19:06:50 del 04/11/2026 y avanza en tiempo real
+  const T0 = 19 * 3600 + 6 * 60 + 50, started = Date.now();
+  let skew = 0;                                    // "Pasan 30 min" adelanta el reloj simulado
+  const nowSec = () => T0 + skew + Math.floor((Date.now() - started) / 1000);
+  // RN-113 (decisión 2026-11-08): solo una acción de Raúl cuenta como actividad; el polling no renueva la sesión
+  const IDLE = 1800;
+  let lastAction = T0;
+  const touch = () => { lastAction = nowSec(); };
+  const hms = s => `${pad(Math.floor(s / 3600) % 24)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
+  const hm = s => hms(s).slice(0, 5);
+  const iso = t => `${TODAY}T${t}-05:00`;
+  const DAY = 'miércoles 04/11/2026';
+  const RETURN = 'reason=expired&returnUrl=%2Fconcierge';
+
+  // Reserva local adicional (sin invitados) coherente con CH.DATA; ingresos ya marcados antes de abrir la página
+  const EXTRA = [{ id: 'r-8970', area: 'Salón de fiestas', unit: 'B-205', date: TODAY, start: '10:00', end: '13:00', status: 'Confirmed', guests: [] }];
+  const PRE = { 'r-8971-g1': '12:04:18', 'r-8971-g2': '12:09:51', 'r-8971-g3': '12:31:07', 'r-8973-g1': '17:02:40', 'r-8972-g2': '18:52:13', 'r-8972-g3': '18:58:30' };
+
+  let list, server, msg, pollError, expired, lastUpdate, query;
+  function reset() {
+    // RN-029: solo Confirmed de hoy (America/Lima), por hora de inicio. RN-158: no se copia el anfitrión ni datos personales
+    list = EXTRA.concat(DATA.reservations).filter(r => r.date === TODAY && r.status === 'Confirmed')
+      .sort((a, b) => a.start.localeCompare(b.start))
+      .map(r => ({ id: r.id, area: r.area, unit: r.unit, start: r.start, end: r.end,
+        guests: (r.guests || []).map((n, i) => ({ id: `${r.id}-g${i + 1}`, name: n, at: PRE[`${r.id}-g${i + 1}`] || null })) }));
+    server = { cancelled: new Set(), checks: {} };   // lo que pasó en el servidor y esta pantalla aún no ve
+    msg = null; pollError = false; expired = false; lastUpdate = T0; query = ''; skew = 0; lastAction = T0;
+  }
+  reset();
+
+  // ---------- Vista ----------
+  const checked = r => r.guests.filter(g => g.at).length;
+  function guestRow(g) {
+    const ing = g.at
+      ? `<span class="badge badge-success"><span aria-hidden="true">✓&nbsp;</span>Ingresó&nbsp;<time class="tnum" datetime="${iso(g.at)}">${g.at.slice(0, 5)}</time></span>`
+      : `<span aria-hidden="true">—</span><span class="sr-only">Sin ingreso</span>`;
+    const act = g.at ? '' : `<button class="btn btn-primary btn-sm" type="button" data-checkin="${g.id}" aria-label="Marcar ingreso de ${esc(g.name)}">Marcar ingreso</button>`;
+    return `<tr data-name="${esc(g.name)}"><td data-label="Invitado" class="gname">${esc(g.name)}</td>
+      <td data-label="Ingreso">${ing}</td><td data-label="Acción"${act ? '' : ' class="td-empty"'}>${act}</td></tr>`;
+  }
+  function resCard(r) {
+    const n = r.guests.length;
+    const body = n
+      ? `<div class="table-wrap"><table class="dt"><caption class="sr-only">Invitados de ${r.unit}, ${esc(r.area)}</caption>
+          <thead><tr><th scope="col">Invitado</th><th scope="col" class="col-ing">Ingreso</th><th scope="col" class="col-act">Acción</th></tr></thead>
+          <tbody>${r.guests.map(guestRow).join('')}</tbody></table></div>`
+      : `<p class="muted">Sin invitados registrados.</p>`;
+    return `<section class="card pt-res" id="reservation-${r.id}" data-unit="${r.unit}" aria-labelledby="h-${r.id}">
+      <div class="pt-head"><h2 id="h-${r.id}"><time datetime="${iso(r.start + ':00')}">${r.start}</time> – ${r.end} · ${esc(r.area)} · ${r.unit}</h2>
+        <p class="pt-count tnum">${n ? `${checked(r)} de ${n} ingresaron` : '0 invitados'}</p></div>${body}</section>`;
+  }
+  function listHtml(c) {
+    if (c.state === 'empty' || !list.length) return `<div class="empty">${ICON.cal}<p class="muted">No hay reservas confirmadas para hoy.</p></div>`;
+    return list.map(resCard).join('') +
+      `<div class="empty" id="pt-nomatch" hidden>${ICON.doc}<p class="muted">Ningún invitado ni unidad coincide con la búsqueda.</p></div>`;
+  }
+  const updatedHtml = () => `Última actualización <time class="tnum" datetime="${iso(hms(lastUpdate))}">${hm(lastUpdate)}</time> <span class="dot${pollError ? ' dot-off' : ''}" aria-hidden="true"></span>`;
+  const pollHtml = () => pollError ? alert('danger', 'Sin conexión. Reintentando…', '<p>La lista puede no estar al día mientras no vuelva la conexión.</p>') : '';
+  function msgHtml() {
+    let h = '';
+    if (expired) h += alert('warning', 'Tu sesión se cerró. Inicia sesión de nuevo.',
+      `<div><a href="#" class="btn btn-primary" data-go="P-001" data-params="${RETURN.replace('&', '&amp;')}">Iniciar sesión</a></div>${rn('El polling recibió 401 · RN-113 / RN-114')}`);
+    if (msg) h += alert(msg.kind, msg.title, msg.body || '', msg.kind === 'success' ? 'status' : 'alert');
+    return h;
+  }
+
+  function view(c) {
+    if (c.state === 'loading') { c.title = 'Portería · ' + DAY; return CH.loadingView('SSR: la portería se entrega completa; luego el script de ~2 KB consulta /api/concierge/today cada 30 s.'); }
+    if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+    if (c.state === 'denied') { c.title = 'No tienes acceso a esta página'; return CH.deniedView(); }
+    c.title = 'Portería · ' + DAY;
+    const has = !expired && c.state === 'data' && list.length > 0;
+    // RN-137 y HU-003B: con la sesión vencida (401) la PC compartida no muestra ningún nombre; solo el aviso fijo
+    if (expired) return `<div class="content pt"><h1 class="page">Portería · <time datetime="${TODAY}">${DAY}</time></h1>
+      <div id="pt-msg">${msgHtml()}</div>
+      ${rn('401: la lista de invitados se retira de la pantalla y del DOM; el polling se detiene')}</div>`;
+    return `<div class="content pt">
+      <div class="pt-top"><h1 class="page">Portería · <time datetime="${TODAY}">${DAY}</time></h1>
+        <div class="pt-update"><p id="pt-updated" aria-live="polite">${updatedHtml()}</p>
+          <button class="btn btn-secondary" type="button" id="pt-refresh">Actualizar ahora</button></div>
+        ${rn('RN-026 · polling cada 30 s con ETag (304 = sin cambios) · sin JS: meta refresh 60 s · una cancelada sale en ≤ 60 s')}${rn('RN-113 · el polling no cuenta como actividad: a los 1,800 s sin una acción de Raúl, el siguiente polling recibe 401')}</div>
+      <div id="pt-msg">${msgHtml()}</div>
+      <div id="pt-poll" aria-live="polite">${pollHtml()}</div>
+      ${has ? `<div class="field pt-search"><label for="q">Buscar invitado</label>
+        <p class="hint" id="q-hint">Escribe el nombre del invitado o la unidad (por ejemplo, A-502).</p>
+        <input class="input" id="q" type="search" autocomplete="off" spellcheck="false" aria-describedby="q-hint" value="${esc(query)}">
+        <p class="muted" id="q-count" aria-live="polite"></p>${rn('🧩 JS opcional: filtra en la página, conserva el filtro al refrescar')}</div>` : ''}
+      <div class="pt-list" id="pt-list">${listHtml(c)}</div>
+      <div class="pt-notes">${rn('RN-029 · solo reservas Confirmed de hoy (America/Lima), por hora de inicio')}${rn('RN-158 · sin DNI, teléfono, correo ni nombre del anfitrión')}${rn('RN-030 · ingreso con fecha-hora ISO 8601 en &lt;time datetime&gt;')}${rn('RN-164 · un solo ingreso por invitado; solo reservas vigentes hoy')}${rn('RN-031 · menú solo con Portería: Gastos y Contrataciones → 403')}</div>
+    </div>`;
+  }
+
+  // ---------- Filtro (🧩 JS opcional) ----------
+  const norm = s => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  function applyFilter() {
+    const q = norm(query);
+    let total = 0, anySec = false;
+    document.querySelectorAll('#pt-list .pt-res').forEach(sec => {
+      const unitHit = !!q && norm(sec.dataset.unit).includes(q);
+      let vis = 0;
+      sec.querySelectorAll('tr[data-name]').forEach(tr => {
+        const show = !q || unitHit || norm(tr.dataset.name).includes(q);
+        tr.hidden = !show; if (show) vis++;
+      });
+      const showSec = !q || unitHit || vis > 0;
+      sec.hidden = !showSec; if (showSec) anySec = true;
+      total += vis;
+    });
+    const nm = document.getElementById('pt-nomatch'); if (nm) nm.hidden = !q || anySec;
+    const cnt = document.getElementById('q-count');
+    if (cnt) cnt.textContent = q ? `${total} ${total === 1 ? 'resultado' : 'resultados'}` : '';
+  }
+
+  // Repinta solo las zonas dinámicas, conservando el filtro y el foco (como el polling con 200)
+  function paint() {
+    const $ = id => document.getElementById(id);
+    if (expired) { ctx.rerender(true); const al = document.querySelector('#pt-msg .alert'); if (al) { al.tabIndex = -1; al.focus(); } return; }
+    if (!$('pt-list')) return;
+    const a = document.activeElement, fid = a && a.dataset ? a.dataset.checkin : null;
+    $('pt-updated').innerHTML = updatedHtml();
+    $('pt-msg').innerHTML = msgHtml();
+    $('pt-poll').innerHTML = pollHtml();
+    $('pt-list').innerHTML = listHtml(ctx);
+    applyFilter();
+    if (fid) { const b = document.querySelector(`[data-checkin="${fid}"]`); if (b) b.focus(); }
+  }
+
+  function info(t) { const el = document.getElementById('sim-info'); if (el) el.innerHTML = t || ''; }
+
+  // GET /api/concierge/today (cada 30 s o "Actualizar ahora")
+  function poll() {
+    if (ctx.state !== 'data') return;
+    if (expired) return;                                                     // aviso fijo: el polling se detiene
+    if (nowSec() - lastAction >= IDLE) {                                     // RN-113: el GET automático recibe 401
+      expired = true; msg = null; paint();
+      return info(`Polling de las ${hm(nowSec())}: 401. La última acción de Raúl fue a las ${hm(lastAction)} (${IDLE} s sin actividad; el polling no cuenta, RN-113).`);
+    }
+    if (document.getElementById('sim-offline').checked) { pollError = true; paint(); return; }
+    pollError = false;
+    const before = list.length;
+    list = list.filter(r => !server.cancelled.has(r.id));                          // RN-026
+    list.forEach(r => r.guests.forEach(g => { if (!g.at && server.checks[g.id]) g.at = server.checks[g.id]; }));
+    lastUpdate = nowSec();
+    if (msg && msg.kind !== 'success' && before !== list.length) msg = null;
+    paint();
+    if (before !== list.length) info(`Refresco de las ${hm(lastUpdate)}: la reserva cancelada ya no aparece en portería (RN-026).`);
+  }
+
+  function findGuest(gid) {
+    for (const r of list) { const g = r.guests.find(x => x.id === gid); if (g) return [r, g]; }
+    return [null, null];
+  }
+
+  // POST /api/concierge/guests/{guestId}/check-in
+  function checkIn(btn) {
+    if (expired) return CH.go('P-001', RETURN);
+    touch();
+    const gid = btn.dataset.checkin, [r, g] = findGuest(gid);
+    if (!g) return;
+    const order = [...document.querySelectorAll('[data-checkin]')].map(x => x.dataset.checkin);
+    const after = order.slice(order.indexOf(gid) + 1);
+    CH.sending(btn, 500, () => {
+      const name = esc(g.name);
+      if (server.cancelled.has(r.id)) {
+        msg = { kind: 'danger', title: 'Esta reserva ya no está vigente hoy. No se puede marcar el ingreso.',
+          body: `<p>${r.start} – ${r.end} · ${esc(r.area)} · ${r.unit}. Desaparecerá de la lista en el próximo refresco.</p>${rn('GUEST_CHECK_IN_NOT_ALLOWED · 422 · RN-164')}` };
+      } else if (server.checks[g.id]) {
+        g.at = server.checks[g.id];
+        msg = { kind: 'warning', title: 'Este invitado ya tiene su ingreso marcado.',
+          body: `<p>${name} ingresó a las ${g.at.slice(0, 5)}. Se conserva la hora original.</p>${rn('GUEST_ALREADY_CHECKED_IN · 422 · RN-164')}` };
+      } else {
+        g.at = hms(nowSec()); server.checks[g.id] = g.at;                          // RN-030
+        msg = { kind: 'success', title: `Registraste el ingreso de ${name}.`, body: rn(`RN-030 · CheckedInAt = ${iso(g.at)}`) };
+      }
+      paint();
+      if (msg.kind === 'success') {
+        const next = after.map(id => document.querySelector(`[data-checkin="${id}"]`)).find(b => b && !b.closest('[hidden]'));
+        if (next) next.focus();
+        else { const al = document.querySelector('#pt-msg .alert'); if (al) { al.setAttribute('tabindex', '-1'); al.focus(); } }
+      } else {
+        const al = document.querySelector('#pt-msg [role="alert"]'); if (al) al.focus();
+      }
+    });
+  }
+
+  const ctx = CH.init({
+    code: 'P-020', title: 'Portería: reservas del día',
+    roles: ['raul'],
+    route: '/concierge',
+    states: [['data', 'Con datos'], ['empty', 'Vacío'], ['loading', 'Cargando'], ['error', 'Error'], ['denied', 'Otro rol (403)']],
+    extraControls: `<div class="proto-actions">
+        <button class="proto-btn" id="sim-poll" type="button">Forzar refresco de 30 s</button>
+        <button class="proto-btn" id="sim-cancel" type="button">Administración cancela C-110</button>
+        <button class="proto-btn" id="sim-other" type="button">Otra PC marca un invitado de A-502</button>
+        <button class="proto-btn" id="sim-401" type="button">Vence la sesión (401)</button>
+        <button class="proto-btn" id="sim-idle" type="button">Pasan 30 min sin acciones (el polling sigue)</button>
+        <label class="chk" for="sim-offline"><input type="checkbox" id="sim-offline"> Polling sin conexión</label>
+        <button class="proto-btn" id="sim-reset" type="button">Reiniciar datos</button>
+      </div>
+      <p class="proto-info" id="sim-info"></p>`,
+    render: view,
+    afterRender: applyFilter
+  });
+
+  setInterval(poll, 30000);
+
+  document.addEventListener('input', e => { if (e.target.id === 'q') { query = e.target.value; applyFilter(); }          // filtro local: no envía solicitudes, no es actividad });
+
+  document.addEventListener('click', e => {
+    const b = e.target.closest('[data-checkin]');
+    if (b) { e.preventDefault(); checkIn(b); return; }
+    if (e.target.closest('#pt-refresh')) { if (!expired) touch(); poll(); return; }        // pulsar "Actualizar ahora" sí es actividad
+    const id = e.target.id;
+    if (id === 'sim-poll') poll();
+    else if (id === 'sim-cancel') {
+      if (!list.some(r => r.id === 'r-8973')) return info('La reserva de C-110 ya no está en la lista. Usa "Reiniciar datos".');
+      server.cancelled.add('r-8973');
+      info(`La administración canceló la reserva de <b>C-110</b> (Parrilla 17:00 – 21:00) a las ${hm(nowSec())}. Sigue visible hasta el próximo refresco (≤ 30 s). Si marcas un ingreso antes, verás GUEST_CHECK_IN_NOT_ALLOWED.`);
+    } else if (id === 'sim-other') {
+      const r = list.find(x => x.id === 'r-8972'), g = r && r.guests.find(x => !x.at && !server.checks[x.id]);
+      if (!g) return info('No quedan invitados de A-502 sin ingreso.');
+      server.checks[g.id] = hms(nowSec() - 25);
+      info(`Otra PC marcó a <b>${esc(g.name)}</b> a las ${server.checks[g.id].slice(0, 5)}; esta pantalla aún no se refrescó. Pulsa "Marcar ingreso" en su fila para ver GUEST_ALREADY_CHECKED_IN.`);
+    } else if (id === 'sim-401') {
+      if (ctx.state !== 'data') return;
+      expired = true; msg = null; paint();
+      const al = document.querySelector('#pt-msg .alert'); if (al) { al.setAttribute('tabindex', '-1'); al.focus(); }
+      info('El siguiente GET respondió 401: la sesión se cerró por inactividad (RN-113) o por 12 h (RN-114).');
+    } else if (id === 'sim-idle') {
+      if (ctx.state !== 'data' || expired) return;
+      skew += IDLE - (nowSec() - lastAction); poll();                   // justo a los 1,800 s desde la última acción
+    } else if (id === 'sim-reset') { reset(); info(''); ctx.rerender(); }
+  });
+
+  // Cambiar de estado limpia los avisos del último envío
+  document.addEventListener('change', e => { if (e.target.name === 'ch-st') { msg = null; expired = false; pollError = false; info(''); } }, true);
+})();
+</script>
+</body>
+</html>

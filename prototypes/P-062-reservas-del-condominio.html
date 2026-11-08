@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Reservas del condominio · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+[hidden]{display:none!important}
+.rv-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;gap:var(--space-4)}
+.rv-head .btn{flex:none}
+.rv-filter{display:flex;flex-wrap:wrap;align-items:flex-end;gap:var(--space-4);background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:var(--radius-md);padding:var(--space-4)}
+.rv-filter .field{flex:1 1 12rem;max-width:18rem}
+.rv-filter .field .input,.rv-filter .field .select{margin-top:var(--space-1)}
+.rv-filter .btn{flex:none}
+.rv-day{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:var(--space-3) var(--space-4)}
+.rv-day h2{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2)}
+.rv-day .count{margin:var(--space-1) 0 0;color:var(--color-text-muted)}
+.rv-nav{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.rv-table td.when{white-space:nowrap;font-weight:600}
+.rv-table .st{display:flex;flex-direction:column;align-items:flex-start;gap:var(--space-1)}
+.rv-table .st small{font-size:1rem;color:var(--color-text-muted)}
+.rv-table .acts{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center}
+.rv-table .acts .muted{font-size:1rem}
+.rv-table tr.is-new td{background:var(--color-success-subtle)}
+.rv-table .col-act{width:14rem}
+.pager{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3)}
+.pager .btn[aria-disabled="true"]{opacity:.55;cursor:not-allowed}
+.rv-notes{display:none;flex-wrap:wrap;gap:var(--space-2)}
+.show-notes .rv-notes{display:flex}
+@container shell (max-width:37.49em){
+  .rv-filter .field{max-width:none;flex-basis:100%}
+  .rv-filter .btn{width:100%}
+  .rv-head .btn{width:100%}
+  .rv-table .st{align-items:flex-end}
+  .rv-table .acts{justify-content:flex-end}
+  .rv-table tr.is-new{border-color:var(--color-success);background:var(--color-success-subtle)}
+  .rv-table tr.is-new td{background:none}
+}
+.proto-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;margin-top:var(--space-2)}
+.proto-actions .lbl{color:var(--proto-muted);font-weight:600}
+.proto-info{color:var(--proto-muted);margin:var(--space-2) 0 0;max-width:56rem}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-062 · Reservas del condominio (Administrator) — 09-ui-spec.md §3.8. Flujos F4 (A1) y F11.
+// Reglas: RN-076 (reserva a nombre de una unidad, sin RN-077), RN-161 (cancelar solo antes del inicio),
+// RN-084 (Cancelled + quién y cuándo), RN-088 (aviso al anfitrión), RN-085 (Realizada calculada).
+(function () {
+  const { DATA, ICON, TODAY, rn, alert, esc, fmtDate, fieldError } = CH;
+  const NOW = CH.nowStamp();              // hora simulada común (shell.js), por defecto 10:30
+  const DAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+  const AREA_BY_ID = { 'a-salon': 'Salón de fiestas', 'a-parrilla': 'Parrilla' };
+
+  // Reservas locales de esta pantalla (coherentes con CH.DATA.areas: Salón 09:00–23:00 máx. 5 h, Parrilla 11:00–22:00 máx. 4 h)
+  const EXTRA = [
+    // Hoy: ya empezó a las 10:00 (también la usa P-020) → sin "Cancelar"
+    { id: 'r-8970', area: 'Salón de fiestas', unit: 'B-205', host: 'Teresa Gamarra', date: '2026-11-04', start: '10:00', end: '13:00', status: 'Confirmed', unitPeople: 2, guestsCount: 0 },
+    // Pasado: se calculan como Realizadas (RN-085)
+    { id: 'r-8601', area: 'Parrilla', unit: 'B-104', host: 'Luis Rojas', date: '2026-11-01', start: '12:00', end: '16:00', status: 'Confirmed', unitPeople: 2, guestsCount: 8 },
+    { id: 'r-8602', area: 'Salón de fiestas', unit: 'A-1104', host: 'Rosa Huamán', date: '2026-11-01', start: '18:00', end: '23:00', status: 'Confirmed', unitPeople: 3, guestsCount: 24 },
+    // Sábado 21/11: día lleno (sirve para ver la paginación de demostración)
+    { id: 'r-8603', area: 'Salón de fiestas', unit: 'C-110', host: 'Javier Cárdenas', date: '2026-11-21', start: '09:00', end: '13:00', status: 'Confirmed', unitPeople: 2, guestsCount: 14 },
+    { id: 'r-8604', area: 'Parrilla', unit: 'B-302', host: 'Sofía Paredes', date: '2026-11-21', start: '11:00', end: '14:00', status: 'Confirmed', unitPeople: 4, guestsCount: 6 },
+    { id: 'r-8605', area: 'Salón de fiestas', unit: 'A-708', host: 'Miguel Ángel Torres', date: '2026-11-21', start: '14:00', end: '18:00', status: 'Cancelled', cancelledBy: 'host', cancelledAt: '2026-11-02 21:14', unitPeople: 2, guestsCount: 20 },
+    { id: 'r-8606', area: 'Parrilla', unit: 'B-1203', host: 'Pedro Salas', date: '2026-11-21', start: '14:30', end: '18:30', status: 'Confirmed', unitPeople: 2, guestsCount: 10 },
+    { id: 'r-8607', area: 'Salón de fiestas', unit: 'C-305', host: 'Gloria Medina', date: '2026-11-21', start: '18:00', end: '23:00', status: 'Confirmed', unitPeople: 3, guestsCount: 34 },
+    { id: 'r-8608', area: 'Parrilla', unit: 'A-1104', host: 'Rosa Huamán', date: '2026-11-21', start: '18:30', end: '22:00', status: 'Confirmed', unitPeople: 3, guestsCount: 5 },
+    // 12/12: la fila "Cancelada" del wireframe
+    { id: 'r-8609', area: 'Parrilla', unit: 'A-301', host: 'Carla Díaz', date: '2026-12-12', start: '12:00', end: '15:00', status: 'Cancelled', cancelledBy: 'host', cancelledAt: '2026-11-01 09:12', unitPeople: 3, guestsCount: 0 }
+  ];
+  // P-015 busca primero en CH.DATA y luego en sessionStorage 'res:{id}': así "Ver" abre también estas reservas
+  EXTRA.forEach(r => { if (!CH.reservation(r.id)) CH.store.set('res:' + r.id, JSON.stringify(r)); });
+  // Cancelaciones hechas en P-016 sobre reservas locales (shell.js solo aplica los parches a CH.DATA)
+  const sessionPatch = (() => { try { const s = JSON.parse(CH.store.get('res-session-v1')); return (s && s.patch) || {}; } catch (e) { return {}; } })();
+
+  // ---------- Utilidades ----------
+  const isIso = d => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d || '')) return false;
+    const [y, m, dd] = d.split('-').map(Number), t = new Date(Date.UTC(y, m - 1, dd));
+    return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === dd;
+  };
+  const addDays = (d, n) => { const [y, m, dd] = d.split('-').map(Number); return new Date(Date.UTC(y, m - 1, dd + n)).toISOString().slice(0, 10); };
+  const weekday = d => { const [y, m, dd] = d.split('-').map(Number); return DAYS[new Date(Date.UTC(y, m - 1, dd)).getUTCDay()]; };
+  const dayLabel = d => `${weekday(d)} ${fmtDate(d)}`;
+  const people = r => r.unitPeople != null ? r.unitPeople + (r.guests ? r.guests.length : (r.guestsCount || 0)) : null;
+  const fmtStamp = s => `<time datetime="${s.replace(' ', 'T')}:00-05:00" class="tnum">${fmtDate(s.slice(0, 10))} ${s.slice(11)}</time>`;
+
+  function allReservations(cancelledId) {
+    const known = new Set(DATA.reservations.map(r => r.id));
+    return DATA.reservations.concat(EXTRA.filter(r => !known.has(r.id)).map(r => sessionPatch[r.id] ? Object.assign({}, r, sessionPatch[r.id]) : r))
+      .map(r => {
+        const x = Object.assign({}, r);
+        // Regreso desde P-016 (PRG). Si P-016 aún no guardó la cancelación, se simula aquí (RN-084)
+        if (x.id === cancelledId) {
+          if (x.status === 'Confirmed') Object.assign(x, { status: 'Cancelled', cancelledBy: 'admin', cancelledAt: TODAY + ' 10:32' });
+          x.justCancelled = x.status === 'Cancelled';
+        }
+        const s = x.date + 'T' + x.start, e = x.date + 'T' + x.end;
+        x.st = x.status === 'Confirmed' && e <= NOW ? 'Completed' : x.status;            // RN-085
+        x.running = x.st === 'Confirmed' && s <= NOW;                                     // franja [inicio, fin) ya empezó
+        x.canCancel = x.st === 'Confirmed' && s > NOW;                                    // RN-161
+        return x;
+      });
+  }
+
+  // ---------- Estado de la pantalla (en la app real: query string de un <form method="get">) ----------
+  const P = CH.params();
+  const urlCancelled = P.get('cancelled');
+  let f, showAlert, focusAfter = null;
+  function readUrl() {
+    const cr = urlCancelled && allReservations(urlCancelled).find(r => r.id === urlCancelled && r.justCancelled);
+    f = {
+      date: P.has('date') ? P.get('date') : (cr ? cr.date : TODAY),
+      areaId: AREA_BY_ID[P.get('areaId')] ? P.get('areaId') : '',
+      page: Math.max(1, parseInt(P.get('page'), 10) || 1)
+    };
+    showAlert = !!cr;
+  }
+  readUrl();
+
+  const pageSize = () => document.getElementById('demoPager') && document.getElementById('demoPager').checked ? 3 : 20;
+  const route = () => {
+    const q = new URLSearchParams();
+    q.set('date', f.date); if (f.areaId) q.set('areaId', f.areaId); if (f.page > 1) q.set('page', f.page);
+    return '/admin/reservations?' + q.toString();
+  };
+  function syncUrl(keepCancelled) {
+    try {
+      const q = new URLSearchParams(location.search);
+      q.set('date', f.date);
+      if (f.areaId) q.set('areaId', f.areaId); else q.delete('areaId');
+      if (f.page > 1) q.set('page', f.page); else q.delete('page');
+      if (!keepCancelled) q.delete('cancelled');
+      q.delete('state');
+      history.replaceState(null, '', '?' + q.toString());
+    } catch (e) { }
+  }
+
+  // ---------- Vista ----------
+  function row(r) {
+    const n = people(r), who = `${r.unit} de las ${r.start}`;
+    let st = CH.resBadge(r.st);
+    if (r.st === 'Cancelled') {
+      const by = r.cancelledBy === 'admin' ? 'Por la administración' : 'Por el anfitrión';
+      st += `<small>${by}${r.cancelledAt ? ` · ${fmtStamp(r.cancelledAt)}` : ''}</small>`;
+    } else if (r.running) st += `<small>En curso</small>`;
+    let acts = `<a href="#" class="btn btn-secondary btn-sm" data-go="P-015" data-params="id=${r.id}" aria-label="Ver la reserva de ${esc(who)}">Ver</a>`;
+    if (r.canCancel) acts += `<a href="#" class="btn btn-secondary btn-sm" data-go="P-016" data-params="id=${r.id}" aria-label="Cancelar la reserva de ${esc(who)}">Cancelar</a>`;
+    else if (r.running) acts += `<span class="muted">Ya empezó: no se puede cancelar</span>`;
+    return `<tr${r.justCancelled ? ' class="is-new"' : ''}>
+      <td data-label="Horario" class="when"><time datetime="${r.date}T${r.start}:00-05:00" class="tnum">${r.start} – ${r.end}</time></td>
+      <td data-label="Área">${esc(r.area)}</td>
+      <td data-label="Unidad" class="tnum">${r.unit}</td>
+      <td data-label="Personas" class="num">${n != null ? n : '<span aria-hidden="true">—</span><span class="sr-only">Sin dato</span>'}</td>
+      <td data-label="Estado"><div class="st">${st}</div></td>
+      <td data-label="Acción"><div class="acts">${acts}</div></td></tr>`;
+  }
+
+  function pager(page, pages) {
+    if (pages <= 1) return rn('Pagination · 20 por página (máx. 50) · con una sola página no se muestra');
+    const link = (p, txt, label, off) => off
+      ? `<span class="btn btn-secondary btn-sm" aria-disabled="true">${txt}</span>`
+      : `<a href="?page=${p}" class="btn btn-secondary btn-sm" data-page="${p}" aria-label="${label}">${txt}</a>`;
+    return `<nav aria-label="Paginación" class="pager">${link(page - 1, '← Anterior', 'Página anterior', page <= 1)}
+      <span class="tnum" aria-current="page">Página ${page} de ${pages}</span>${link(page + 1, 'Siguiente →', 'Página siguiente', page >= pages)}</nav>`;
+  }
+
+  function filterForm(invalid, rawValue) {
+    const opts = [['', 'Todas'], ['a-salon', 'Salón de fiestas'], ['a-parrilla', 'Parrilla']]
+      .map(([v, t]) => `<option value="${v}"${v === f.areaId ? ' selected' : ''}>${t}</option>`).join('');
+    const desc = invalid ? ' aria-invalid="true" aria-describedby="f-date-hint f-date-err"' : ' aria-describedby="f-date-hint"';
+    return `<form method="get" action="/admin/reservations" class="rv-filter" id="rv-form" novalidate>
+      <div class="field"><label for="f-date">Fecha</label><p class="sr-only" id="f-date-hint">Formato dd/mm/aaaa</p>
+        <input class="input tnum" type="date" id="f-date" name="date" value="${invalid ? esc(rawValue) : f.date}"${desc}>
+        ${invalid ? `<div id="f-date-err">${fieldError('Ingresa una fecha válida.')}</div>` : ''}</div>
+      <div class="field"><label for="f-area">Área</label>
+        <select class="select" id="f-area" name="areaId">${opts}</select></div>
+      <button class="btn btn-secondary" type="submit">Filtrar</button>
+    </form>`;
+  }
+
+  function renderData(c, opts) {
+    const cancelledId = c.state === 'cancelled' ? 'r-8841' : (showAlert ? urlCancelled : null);
+    const list = allReservations(cancelledId);
+    const done = cancelledId ? list.find(r => r.id === cancelledId && r.justCancelled) : null;
+    const invalid = c.state === 'invalid' || !isIso(f.date);
+
+    let h = `<div class="rv-head"><h1 class="page">Reservas del condominio</h1>
+      <a href="#" class="btn btn-primary" data-go="P-012">Reservar a nombre de una unidad</a></div>`;
+    h += rn('RN-076 · el Administrator reserva a nombre de cualquier unidad con las reglas del área, salvo RN-077 (unidad alquilada)');
+
+    if (invalid) {
+      h += alert('danger', 'Revisa el filtro', `<ul><li><a href="#f-date">Fecha: Ingresa una fecha válida.</a></li></ul>`, 'alert');
+    } else if (done && (c.state === 'cancelled' || showAlert)) {
+      h += alert('success', `Cancelaste la reserva de ${done.unit}`,
+        `<p>${esc(done.area)} · <time datetime="${done.date}T${done.start}:00-05:00" class="tnum">${dayLabel(done.date)} · ${done.start} – ${done.end}</time>. Sus invitados ya no figurarán en portería.</p>
+         <p>Avisaremos a la unidad ${done.unit} cuando inicie sesión.</p>`, 'status') +
+        `<div class="rv-notes">${rn('F4 A1 · P-016 → P-062 con Alert success (role="status", Post/Redirect/Get)')}${rn('RN-084 · Cancelled + cancelledBy = admin + cancelledAt ISO 8601')}${rn('RN-088 · la unidad ve el aviso en P-010 al iniciar sesión')}${rn('RN-026 · sale de portería en ≤ 60 s')}</div>`;
+    }
+
+    h += filterForm(invalid, c.state === 'invalid' ? '2026-02-30' : f.date);
+
+    if (invalid) {
+      h += `<div class="empty">${ICON.cal}<p class="muted">Corrige la fecha para ver las reservas.</p></div>`;
+      return `<div class="content">${h}</div>`;
+    }
+
+    const day = c.state === 'empty' ? [] : list.filter(r => r.date === f.date && (!f.areaId || r.area === AREA_BY_ID[f.areaId]))
+      .sort((a, b) => (a.start + a.area).localeCompare(b.start + b.area));
+    const size = pageSize(), pages = Math.max(1, Math.ceil(day.length / size));
+    if (f.page > pages) f.page = pages;
+    const items = day.slice((f.page - 1) * size, f.page * size);
+    const conf = day.filter(r => r.st === 'Confirmed').length;
+    const prev = addDays(f.date, -1), next = addDays(f.date, 1);
+
+    h += `<section class="sec" aria-labelledby="h-day">
+      <div class="rv-day"><div><h2 id="h-day" tabindex="-1"><time datetime="${f.date}">${dayLabel(f.date)}</time>${f.date === TODAY ? CH.badge('info', 'Hoy') : ''}</h2>
+        <p class="count tnum" aria-live="polite">${day.length ? `${day.length} ${day.length === 1 ? 'reserva' : 'reservas'} · ${conf} ${conf === 1 ? 'confirmada' : 'confirmadas'}` : 'Sin reservas'}${f.areaId ? ` · ${AREA_BY_ID[f.areaId]}` : ''}</p></div>
+        <nav class="rv-nav" aria-label="Cambiar de día">
+          <a href="?date=${prev}" class="btn btn-secondary btn-sm" data-day="${prev}" aria-label="Día anterior, ${dayLabel(prev)}">← Día anterior</a>
+          <a href="?date=${next}" class="btn btn-secondary btn-sm" data-day="${next}" aria-label="Día siguiente, ${dayLabel(next)}">Día siguiente →</a></nav></div>`;
+
+    if (items.length) {
+      h += `<div class="table-wrap"><table class="dt rv-table"><caption class="sr-only">Reservas del ${dayLabel(f.date)}${f.areaId ? ', ' + AREA_BY_ID[f.areaId] : ''}</caption>
+        <thead><tr><th scope="col">Horario</th><th scope="col">Área</th><th scope="col">Unidad</th><th scope="col" class="num">Personas</th><th scope="col">Estado</th><th scope="col" class="col-act">Acción</th></tr></thead>
+        <tbody>${items.map(row).join('')}</tbody></table></div>` + pager(f.page, pages);
+    } else {
+      h += `<div class="empty">${ICON.cal}<p class="muted">No hay reservas para este día.</p></div>`;
+    }
+    h += `<div class="rv-notes">${rn('RN-161 · "Cancelar" solo en Confirmadas que aún no empiezan (hora simulada ' + CH.NOW + ')')}${rn('RN-085 · Realizada se calcula al consultar')}${rn('RN-084 · las canceladas muestran quién y cuándo')}${rn('Personas = personas de la unidad + invitados')}</div></section>`;
+    return `<div class="content">${h}</div>`;
+  }
+
+  // Panel de la banda: días con reservas (incluye las creadas en P-012 durante la sesión, F11 paso 6)
+  function fillDays() {
+    const el = document.getElementById('sim-days'); if (!el) return;
+    const days = [...new Set(allReservations(null).map(r => r.date))].sort();
+    el.innerHTML = days.map(d => `<button class="proto-btn" type="button" data-day="${d}">${fmtDate(d).slice(0, 5)}</button>`).join('') +
+      `<button class="proto-btn" type="button" data-day="2026-11-05">05/11 (sin reservas)</button>`;
+    const created = DATA.reservations.filter(r => r.byAdmin);
+    const info = document.getElementById('sim-info');
+    if (info) info.innerHTML = created.length
+      ? 'Creadas en esta sesión desde P-012: ' + created.map(r => `<b>${r.unit}</b> · ${esc(r.area)} · ${fmtDate(r.date)}`).join('; ') + '. Usa el botón de su día para verla en la lista.'
+      : 'Sugerencias: 12/12 es el ejemplo del wireframe; 21/11 tiene 6 reservas (marca la paginación de demostración); hoy, la de B-205 ya empezó.';
+  }
+
+  const ctx = CH.init({
+    code: 'P-062', title: 'Reservas del condominio',
+    roles: ['rosa', 'rosaRes', 'ana', 'marco'],
+    active: 'P-062',
+    route: () => route(),
+    states: [['data', 'Con datos'], ['empty', 'Vacío'], ['loading', 'Cargando'], ['error', 'Error'],
+             ['cancelled', 'Tras cancelar (F4 A1)'], ['invalid', 'Fecha inválida']],
+    extraControls: `<div class="proto-actions"><span class="lbl">Ir al día:</span><span id="sim-days" class="proto-actions" style="margin:0"></span></div>
+      <div class="proto-actions"><label class="chk" for="demoPager"><input type="checkbox" id="demoPager"> Paginación de demostración (3 por página)</label></div>
+      <p class="proto-info" id="sim-info"></p>`,
+    render(c) {
+      if (!c.persona.admin) { c.title = 'No tienes acceso a esta página'; return CH.deniedView(); }   // P-090
+      if (c.state === 'loading') { c.title = 'Reservas del condominio'; return CH.loadingView(); }
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      if (c.state === 'cancelled') { f.date = '2026-12-12'; f.areaId = ''; f.page = 1; }
+      c.title = 'Reservas del condominio';
+      return renderData(c);
+    },
+    afterRender() {
+      if (focusAfter) { const el = document.querySelector(focusAfter); if (el) el.focus(); focusAfter = null; }
+    }
+  });
+  fillDays();
+
+  function apply(changes, focusSel) {
+    Object.assign(f, changes);
+    showAlert = false;
+    if (ctx.state === 'cancelled' || ctx.state === 'invalid' || ctx.state === 'empty') {
+      ctx.state = 'data'; const r = document.getElementById('ch-st-data'); if (r) r.checked = true;
+    }
+    syncUrl(false);
+    focusAfter = focusSel || null;
+    ctx.rerender();
+  }
+
+  // Filtrar (GET). Sin JS el navegador enviaría ?date=&areaId=
+  document.addEventListener('submit', e => {
+    const form = e.target.closest('#rv-form'); if (!form) return;
+    e.preventDefault();
+    const d = form.querySelector('#f-date').value, a = form.querySelector('#f-area').value;
+    if (!isIso(d)) {
+      f.date = d || ''; f.areaId = a; showAlert = false;
+      if (ctx.state !== 'data') { ctx.state = 'data'; document.getElementById('ch-st-data').checked = true; }
+      ctx.rerender();                                      // el resumen role="alert" recibe el foco
+      return;
+    }
+    apply({ date: d, areaId: AREA_BY_ID[a] ? a : '', page: 1 }, '#h-day');
+  });
+
+  document.addEventListener('click', e => {
+    const dayBtn = e.target.closest('[data-day]');
+    if (dayBtn) {
+      e.preventDefault();
+      if (!ctx.persona.admin) return;
+      if (ctx.state === 'loading' || ctx.state === 'error') { ctx.state = 'data'; document.getElementById('ch-st-data').checked = true; }
+      apply({ date: dayBtn.dataset.day, page: 1 }, dayBtn.closest('.proto') ? '#h-day' : `#main [data-day="${dayBtn.dataset.day === addDays(f.date, -1) ? addDays(dayBtn.dataset.day, -1) : addDays(dayBtn.dataset.day, 1)}"]`);
+      return;
+    }
+    const pg = e.target.closest('a[data-page]');
+    if (pg) { e.preventDefault(); apply({ page: Number(pg.dataset.page) }, '#h-day'); return; }
+    const skip = e.target.closest('a[href="#f-date"]');
+    if (skip) { e.preventDefault(); const i = document.getElementById('f-date'); if (i) i.focus(); }
+  });
+
+  document.addEventListener('change', e => {
+    if (e.target.id === 'demoPager') { f.page = 1; syncUrl(true); ctx.rerender(); }
+    else if (e.target.name === 'ch-st') {
+      if (e.target.value !== 'invalid' && !isIso(f.date)) f.date = TODAY;
+      if (e.target.value !== 'cancelled') showAlert = false;
+    }
+  }, true);
+})();
+</script>
+</body>
+</html>

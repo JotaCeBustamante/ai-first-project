@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Editar Parrilla · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.cfg{display:flex;flex-direction:column;gap:var(--space-6)}
+fieldset.group{border:1px solid var(--color-border-subtle);border-radius:var(--radius-md);padding:var(--space-4);margin:0;display:flex;flex-direction:column;gap:var(--space-2)}
+fieldset.group legend{font-weight:600;padding:0 var(--space-1)}
+fieldset.group.invalid{border:2px solid var(--color-danger)}
+.parts{display:flex;flex-wrap:wrap;gap:var(--space-3) var(--space-4);align-items:flex-end}
+.part{display:flex;flex-direction:column;gap:var(--space-1)}
+.part label{font-weight:400}
+.part .input{width:7rem;margin-top:0}
+.part .input[type=time]{width:9rem}
+.input-num{max-width:10rem}
+.btn-full{width:100%}
+.notes{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.proto-x{margin-top:var(--space-2)}
+.proto-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;margin-top:var(--space-2)}
+.proto-info{color:var(--proto-muted);margin:var(--space-2) 0 0;max-width:60rem}
+.proto-info b{color:var(--proto-fg)}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-061 · Configurar área común — 09-ui-spec.md §3.8. Flujo F10 (pasos 1, 2 y 2a). HU-004.
+// Reglas: RN-159 (solo Administrator → si no, P-090 con COMMON_AREA_CONFIG_FORBIDDEN 403), RN-082/RN-021 (cierre posterior a la apertura,
+// mismo día → COMMON_AREA_INVALID_OPENING_HOURS), RN-160 (enteros > 0; duración y anticipación múltiplos de 60 s → COMMON_AREA_INVALID_LIMITS),
+// RN-162 (no cambia reservas confirmadas), RN-171 (nombre repetido → COMMON_AREA_NAME_DUPLICATE), RN-172 (campo vacío → FIELD_REQUIRED).
+// 412 con If-Match/ETag. Éxito → P-060 con Alert success.
+// Guarda en sessionStorage 'ch:areas-v1' (CH.store 'areas-v1'), que P-011 y P-012 también leen.
+(function () {
+  const { DATA, rn, alert, fieldError, esc, store } = CH;
+
+  // ---------- Configuración de áreas (misma lógica en P-060) ----------
+  const AREAS_KEY = 'areas-v1';
+  const ART = { 'a-salon': 'el', 'a-parrilla': 'la' };
+  const seed = () => DATA.areas.map(a => ({
+    id: a.id, name: a.name, open: a.open, close: a.close, capacity: a.capacity, perUnitMonth: a.perUnitMonth,
+    maxDurationSeconds: parseInt(a.maxHours, 10) * 3600, maxAdvanceSeconds: a.advanceDays * 86400,
+    etag: 'W/"1"', updatedAt: null }));
+  const loadAreas = () => { try { const s = JSON.parse(store.get(AREAS_KEY)); if (s && Array.isArray(s.areas)) return s.areas; } catch (e) { } return seed(); };
+  const saveAreas = areas => store.set(AREAS_KEY, JSON.stringify({ v: 1, areas }));
+  const num = n => Number(n).toLocaleString('en-US');
+  const nextEtag = e => 'W/"' + ((parseInt(String(e).replace(/\D/g, ''), 10) || 1) + 1) + '"';
+  const stamp = () => CH.TODAY + 'T' + CH.NOW + ':00-05:00';
+
+  // Textos §3.0.6 (textuales)
+  const MSG = {
+    HOURS: 'La hora de cierre debe ser posterior a la de apertura, el mismo día.',      // COMMON_AREA_INVALID_OPENING_HOURS
+    LIMITS: 'Ingresa un número entero mayor que 0.',                                     // COMMON_AREA_INVALID_LIMITS
+    NAME_DUPLICATE: 'Ya hay un área común con ese nombre.',                              // COMMON_AREA_NAME_DUPLICATE (RN-171)
+    // FIELD_REQUIRED (RN-172): "Completa {el campo}." — uno por campo vacío
+    REQUIRED: { 'f-name': 'Completa el nombre del área.', 'f-open': 'Completa la hora de apertura.', 'f-close': 'Completa la hora de cierre.',
+      'f-dur-h': 'Completa la duración máxima.', 'f-cap': 'Completa el aforo.', 'f-adv-d': 'Completa la anticipación máxima.',
+      'f-ppm': 'Completa las reservas por unidad al mes.' },
+    CONFLICT: 'Otra persona cambió estos datos. Revisa la versión actual.'               // §3.0.4 Conflicto (409/412)
+  };
+  const ORDER = ['f-name', 'f-open', 'f-close', 'f-dur-h', 'f-cap', 'f-adv-d', 'f-ppm'];
+  // RN-171: nombres iguales sin distinguir mayúsculas, tildes ni espacios al inicio y al final
+  const normName = v => String(v).trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+  // Valores de formulario ↔ área (la UI envía segundos)
+  const toForm = a => ({
+    name: a.name, open: a.open, close: a.close,
+    durH: String(Math.floor(a.maxDurationSeconds / 3600)), durM: String(Math.floor(a.maxDurationSeconds % 3600 / 60)),
+    cap: String(a.capacity),
+    advD: String(Math.floor(a.maxAdvanceSeconds / 86400)), advH: String(Math.floor(a.maxAdvanceSeconds % 86400 / 3600)), advM: String(Math.floor(a.maxAdvanceSeconds % 3600 / 60)),
+    ppm: String(a.perUnitMonth) });
+  const EMPTY = { name: '', open: '', close: '', durH: '', durM: '0', cap: '', advD: '', advH: '0', advM: '0', ppm: '' };
+  const n = v => (String(v).trim() === '' ? NaN : Number(v));
+  // Segundos tal como los recibiría el servidor (redondeo al segundo; 0.5 min = 30 s)
+  const secsOf = parts => { const v = parts.map(([x, k]) => n(x) * k); return v.some(isNaN) ? NaN : Math.round(v.reduce((s, x) => s + x, 0)); };
+  const durSecs = f => secsOf([[f.durH, 3600], [f.durM, 60]]);
+  const advSecs = f => secsOf([[f.advD, 86400], [f.advH, 3600], [f.advM, 60]]);
+  const posInt = v => Number.isInteger(v) && v > 0;
+  const okSecs = s => posInt(s) && s % 60 === 0;
+
+  // ---------- Validación (simula el servidor) ----------
+  function validate(f) {
+    const E = [], add = (id, code, msg) => E.push({ id, code, msg });
+    const required = id => add(id, 'FIELD_REQUIRED', MSG.REQUIRED[id]);
+    const blank = (...vs) => vs.some(v => String(v).trim() === '');
+    if (!f.name.trim()) required('f-name');
+    else if (loadAreas().some(x => x.id !== areaId && normName(x.name) === normName(f.name))) add('f-name', 'COMMON_AREA_NAME_DUPLICATE', MSG.NAME_DUPLICATE);
+    if (!f.open) required('f-open');
+    if (!f.close) required('f-close');
+    if (f.open && f.close && !(f.close > f.open)) add('f-open', 'COMMON_AREA_INVALID_OPENING_HOURS', MSG.HOURS);   // RN-082/RN-021: 20:00→02:00 y 11:00→11:00 se rechazan
+    if (blank(f.durH, f.durM)) required('f-dur-h');
+    else if (!okSecs(durSecs(f))) add('f-dur-h', 'COMMON_AREA_INVALID_LIMITS', MSG.LIMITS);
+    if (blank(f.cap)) required('f-cap');
+    else if (!posInt(n(f.cap))) add('f-cap', 'COMMON_AREA_INVALID_LIMITS', MSG.LIMITS);
+    if (blank(f.advD, f.advH, f.advM)) required('f-adv-d');
+    else if (!okSecs(advSecs(f))) add('f-adv-d', 'COMMON_AREA_INVALID_LIMITS', MSG.LIMITS);
+    if (blank(f.ppm)) required('f-ppm');
+    else if (!posInt(n(f.ppm))) add('f-ppm', 'COMMON_AREA_INVALID_LIMITS', MSG.LIMITS);
+    return E.sort((a, b) => ORDER.indexOf(a.id) - ORDER.indexOf(b.id));
+  }
+
+  // ---------- Estado de la página ----------
+  const qp = CH.params();
+  let areaId = qp.get('id');                 // null → /admin/common-areas/new
+  const current = () => areaId ? loadAreas().find(a => a.id === areaId) || null : null;
+
+  function setup(c) {
+    const d = c.data, a = current();
+    d.init = true; d.errors = null; d.conflict = false;
+    d.notFound = !!areaId && !a;
+    d.f = a ? toForm(a) : Object.assign({}, EMPTY);
+    d.etag = a ? a.etag : null;
+    if (c.state === 'hours') { if (!areaId) d.f = toForm(seed()[1]); Object.assign(d.f, { open: '20:00', close: '02:00' }); d.errors = validate(d.f); }
+    if (c.state === 'limits') { if (!areaId) d.f = toForm(seed()[1]); Object.assign(d.f, { cap: '0', ppm: '-1' }); d.errors = validate(d.f); }
+    if (c.state === 'required') { d.f = Object.assign({}, EMPTY, { name: '  ', durM: '', advH: '', advM: '' }); d.errors = validate(d.f); }
+    if (c.state === 'nameDup') {          // RN-171: "parrilla" cuando ya existe "Parrilla" (o el nombre de otra área, sin tildes)
+      const areas = loadAreas(), other = areas.find(x => x.id === 'a-parrilla' && x.id !== areaId) || areas.find(x => x.id !== areaId);
+      if (!areaId) d.f = toForm(seed()[1]);
+      if (other) d.f.name = normName(other.name);
+      d.errors = validate(d.f);
+    }
+    if (c.state === 'conflict' && a) { if (!conflictDone) { otherSave(a); conflictDone = true; } d.f = toForm(current()); d.etag = current().etag; d.conflict = true; }
+  }
+  const ensure = c => { if (!c.data.init) setup(c); };
+  let conflictDone = false;     // el estado "Conflicto" simula un solo guardado ajeno por carga de página
+
+  // Otra persona guarda primero: cambia el aforo (RN-159: "cambia el aforo de la parrilla de 15 a 12")
+  function otherSave(a) {
+    const areas = loadAreas(), x = areas.find(y => y.id === a.id);
+    x.capacity = Math.max(1, x.capacity - 3); x.etag = nextEtag(x.etag); x.updatedAt = stamp(); x.updatedBy = 'otra sesión del Administrator';
+    saveAreas(areas);
+  }
+
+  function renderForm(c) {
+    const d = c.data, f = d.f, a = current(), E = d.errors || [];
+    const err = id => E.find(e => e.id === id);
+    const req = '<span class="req">(obligatorio)</span>';
+    const inv = id => err(id) ? ' aria-invalid="true"' : '';
+    const desc = (id, ...ids) => { const l = ids.filter(Boolean); if (err(id)) l.push(id + '-err'); return l.length ? ` aria-describedby="${l.join(' ')}"` : ''; };
+    const fe = id => err(id) ? `<div id="${id}-err">${fieldError(esc(err(id).msg))}</div>` : '';
+    c.title = a ? 'Editar ' + a.name : 'Nueva área común';
+
+    let h = `<div>
+      <nav class="crumbs" aria-label="Migas de pan"><ol><li><a href="#" data-go="home">Inicio</a></li><li><a href="#" data-go="P-060">Áreas comunes</a></li><li aria-current="page">${esc(c.title)}</li></ol></nav>
+      <a href="#" class="back" data-go="P-060">← Áreas comunes</a>
+      <h1 class="page">${esc(c.title)}</h1></div>`;
+
+    if (E.length) h += alert('danger', 'No pudimos guardar el área',
+      `<p>${E.length === 1 ? 'Corrige este dato:' : `Corrige estos ${E.length} datos:`}</p>
+       <ul>${E.map(e => `<li><a href="#${e.id}" data-focus="${e.id}">${esc(e.msg)}</a></li>`).join('')}</ul>
+       ${rn('422 · ' + Array.from(new Set(E.map(e => e.code))).join(' · ') + ' · se conservan los valores escritos')}`, 'alert');
+    if (d.conflict) h += alert('warning', MSG.CONFLICT,
+      `<p>Cargamos los valores actuales del área. Si quieres cambiar algo, vuelve a guardar.</p>${rn('412 · If-Match con un ETag viejo · valores recargados · ETag nuevo ' + esc(d.etag || ''))}`, 'alert');
+
+    h += alert('info', 'Los cambios aplican a las reservas nuevas. Las reservas ya confirmadas no cambian.', rn('RN-162 · HU-004 C7, C13'));
+
+    const durS = durSecs(f), advS = advSecs(f);
+    h += `<form class="form cfg" id="cfg" method="post" action="/api/common-areas${a ? '/' + esc(a.id) : ''}" novalidate>
+      ${a ? `<input type="hidden" name="etag" value="${esc(d.etag)}">${rn('PUT /api/common-areas/' + esc(a.id) + ' · If-Match: ' + esc(d.etag))}` : rn('POST /api/common-areas → 201')}
+      <div class="field"><label for="f-name">Nombre ${req}</label>
+        <input class="input" id="f-name" name="name" type="text" autocomplete="off" required value="${esc(f.name)}"${desc('f-name')}${inv('f-name')}>${fe('f-name')}
+        ${rn('RN-172 · vacío o solo espacios → FIELD_REQUIRED · RN-171 · nombre de otra área del condominio, sin distinguir mayúsculas, tildes ni espacios de los extremos → COMMON_AREA_NAME_DUPLICATE')}</div>
+
+      <fieldset class="group${err('f-open') || err('f-close') ? ' invalid' : ''}" id="fs-hours"${desc('f-open', 'hours-hint', err('f-close') && 'f-close-err')}><legend>Horario ${req}</legend>
+        <div class="parts">
+          <div class="part"><label for="f-open">Abre</label><input class="input tnum" id="f-open" name="opensAt" type="time" step="60" value="${esc(f.open)}"${inv('f-open')}${desc('f-open', 'hours-hint')}></div>
+          <div class="part"><label for="f-close">Cierra</label><input class="input tnum" id="f-close" name="closesAt" type="time" step="60" value="${esc(f.close)}"${inv('f-open') || inv('f-close')}${desc('f-close', 'hours-hint', err('f-open') && 'f-open-err')}></div>
+        </div>
+        <p class="hint" id="hours-hint">El área no puede cruzar la medianoche.</p>${fe('f-open')}${fe('f-close')}
+        ${rn('RN-082 · RN-021 · cierre > apertura, el mismo día · COMMON_AREA_INVALID_OPENING_HOURS · RN-172 · FIELD_REQUIRED por cada hora vacía')}</fieldset>
+
+      <fieldset class="group${err('f-dur-h') ? ' invalid' : ''}" id="fs-dur"${desc('f-dur-h')}><legend>Duración máxima de una reserva ${req}</legend>
+        <div class="parts">
+          <div class="part"><label for="f-dur-h">Horas</label><input class="input tnum" id="f-dur-h" name="durationHours" type="number" min="0" step="1" inputmode="numeric" value="${esc(f.durH)}"${inv('f-dur-h')}${desc('f-dur-h')}></div>
+          <div class="part"><label for="f-dur-m">Minutos</label><input class="input tnum" id="f-dur-m" name="durationMinutes" type="number" min="0" max="59" step="1" inputmode="numeric" value="${esc(f.durM)}"${inv('f-dur-h')}${desc('f-dur-h')}></div>
+        </div>${fe('f-dur-h')}
+        ${rn('RN-160 · se envía maxDurationSeconds = <span id="dur-secs">' + (isNaN(durS) ? '—' : num(durS) + ' s') + '</span> · entero > 0 y múltiplo de 60')}</fieldset>
+
+      <div class="field"><label for="f-cap">Aforo (personas, contando a la unidad) ${req}</label>
+        <input class="input input-num tnum" id="f-cap" name="capacity" type="number" min="1" step="1" inputmode="numeric" value="${esc(f.cap)}"${desc('f-cap')}${inv('f-cap')}>${fe('f-cap')}
+        ${rn('RN-160 · entero > 0 · RN-023 aforo = personas de la unidad + invitados')}</div>
+
+      <fieldset class="group${err('f-adv-d') ? ' invalid' : ''}" id="fs-adv"${desc('f-adv-d')}><legend>Anticipación máxima ${req}</legend>
+        <div class="parts">
+          <div class="part"><label for="f-adv-d">Días</label><input class="input tnum" id="f-adv-d" name="advanceDays" type="number" min="0" step="1" inputmode="numeric" value="${esc(f.advD)}"${inv('f-adv-d')}${desc('f-adv-d')}></div>
+          <div class="part"><label for="f-adv-h">Horas</label><input class="input tnum" id="f-adv-h" name="advanceHours" type="number" min="0" max="23" step="1" inputmode="numeric" value="${esc(f.advH)}"${inv('f-adv-d')}${desc('f-adv-d')}></div>
+          <div class="part"><label for="f-adv-m">Minutos</label><input class="input tnum" id="f-adv-m" name="advanceMinutes" type="number" min="0" max="59" step="1" inputmode="numeric" value="${esc(f.advM)}"${inv('f-adv-d')}${desc('f-adv-d')}></div>
+        </div>${fe('f-adv-d')}
+        ${rn('RN-160 · se envía maxAdvanceSeconds = <span id="adv-secs">' + (isNaN(advS) ? '—' : num(advS) + ' s') + '</span> · RN-079')}</fieldset>
+
+      <div class="field"><label for="f-ppm">Reservas por unidad al mes ${req}</label>
+        <input class="input input-num tnum" id="f-ppm" name="maxReservationsPerUnitPerMonth" type="number" min="1" step="1" inputmode="numeric" value="${esc(f.ppm)}"${desc('f-ppm')}${inv('f-ppm')}>${fe('f-ppm')}
+        ${rn('RN-160 · entero > 0 · RN-080 cupo mensual')}</div>
+      ${rn('RN-172 · cada campo numérico vacío → FIELD_REQUIRED (antes que COMMON_AREA_INVALID_LIMITS)')}
+
+      <button class="btn btn-primary btn-full" type="submit" id="btn-save">Guardar</button>
+    </form>
+    <div class="notes">${rn('RN-159 · solo Administrator')}${rn('⚠️ Q11 · valores reales pendientes del reglamento interno')}${rn('Éxito → P-060 con Alert success y #area-{id}')}</div>`;
+    return `<div class="content read">${h}</div>`;
+  }
+
+  function notFoundView(c) {
+    c.title = 'No encontrado';
+    return `<div class="content read"><div class="page-state"><span style="color:var(--color-text-muted)">${CH.ICON.big}</span>
+      <h1 class="page" tabindex="-1" id="nf-h1">No encontramos lo que buscas</h1>
+      <p class="muted">Puede que el enlace esté mal escrito o que ya no exista.</p>
+      <div class="actions"><a href="#" class="btn btn-primary btn-block" data-go="home">Ir al inicio</a>
+      <a href="#" class="btn btn-secondary btn-block" data-go="P-060">Volver</a></div>
+      ${rn('P-091 · 404 · RN-103: igual si no existe o es de otro condominio')}</div></div>`;
+  }
+
+  // ---------- Datos de prueba de HU-004 (banda) ----------
+  const PRESETS = {
+    c1:  ['C1 · crear la parrilla: 11:00–22:00, 14,400 s, aforo 15, 2,592,000 s, 4/mes → 201', null,
+          { name: 'Parrilla', open: '11:00', close: '22:00', durH: '4', durM: '0', cap: '15', advD: '30', advH: '0', advM: '0', ppm: '4' }],
+    c2:  ['C2 · horario 20:00 a 02:00 → OPENING_HOURS', 'a-parrilla', { open: '20:00', close: '02:00' }],
+    c3:  ['C3 · horario 11:00 a 11:00 → OPENING_HOURS', 'a-parrilla', { open: '11:00', close: '11:00' }],
+    c4:  ['C4 · aforo 0 → LIMITS', 'a-parrilla', { cap: '0' }],
+    c5:  ['C5 · duración 14,430 s (4 h 0.5 min) → LIMITS', 'a-parrilla', { durH: '4', durM: '0.5' }],
+    c7:  ['C7/C8 · salón: aforo 30', 'a-salon', { cap: '30' }],
+    c9:  ['C9 · mínimos: aforo 1, 60 s, 60 s, 1/mes → guarda', 'a-parrilla', { cap: '1', durH: '0', durM: '1', advD: '0', advH: '0', advM: '1', ppm: '1' }],
+    c10: ['C10 · horario 11:00 a 11:01 → guarda', 'a-parrilla', { open: '11:00', close: '11:01' }],
+    c11: ['C11 · −1 reservas por unidad al mes → LIMITS', 'a-parrilla', { ppm: '-1' }],
+    c13: ['C13 · salón: cierre a las 22:00', 'a-salon', { close: '22:00' }]
+  };
+
+  const ctx = CH.init({
+    code: 'P-061', title: 'Configurar área común', active: 'P-060',
+    roles: ['rosa', 'rosaRes', 'marco', 'ana', 'carla', 'luis', 'raul'],
+    states: [['data', 'Con datos'], ['hours', 'COMMON_AREA_INVALID_OPENING_HOURS'], ['limits', 'COMMON_AREA_INVALID_LIMITS'],
+             ['required', 'Campos vacíos (FIELD_REQUIRED)'], ['nameDup', 'Nombre repetido "parrilla" (COMMON_AREA_NAME_DUPLICATE)'],
+             ['conflict', 'Conflicto (412)'], ['notfound', 'No encontrado (404)'], ['loading', 'Cargando'], ['error', 'Error']],
+    route: () => '/admin/common-areas/' + (areaId || 'new'),
+    extraControls: `<div class="proto-x"><label for="which">Área que se abre</label>
+        <select id="which"><option value="">Nueva área (/new)</option>${loadAreas().map(a => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')}</select></div>
+      <div class="proto-x"><label for="preset">Datos de prueba (HU-004)</label>
+        <select id="preset"><option value="">Elige un criterio…</option>${Object.keys(PRESETS).map(k => `<option value="${k}">${esc(PRESETS[k][0])}</option>`).join('')}</select></div>
+      <label class="chk" for="race"><input type="checkbox" id="race"> Otra persona guarda esta área antes que yo (412)</label>
+      <p class="proto-info" id="sim-info"></p>`,
+    render(c) {
+      ensure(c);
+      // RN-159 · HU-004 C6 (Ana, Resident) y C12 (Marco, BoardMember): 403 COMMON_AREA_CONFIG_FORBIDDEN → P-090
+      if (!c.persona.admin) { c.title = 'No tienes acceso a esta página'; return CH.deniedView().replace('P-090 · 403', 'P-090 · 403 · COMMON_AREA_CONFIG_FORBIDDEN · RN-159'); }
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      if (c.state === 'notfound' || c.data.notFound) return notFoundView(c);
+      return renderForm(c);
+    },
+    afterRender(c) {
+      const el = document.getElementById('sim-info'); if (!el) return;
+      const a = current();
+      el.innerHTML = a ? `Versión guardada de <b>${esc(a.name)}</b>: ETag <b>${esc(a.etag)}</b>${a.updatedAt ? ' · guardada ' + esc(a.updatedAt.slice(0, 16).replace('T', ' ')) + (a.updatedBy ? ' por ' + esc(a.updatedBy) : '') : ' · datos iniciales'}. ` +
+        `La configuración de la sesión vive en sessionStorage <b>ch:areas-v1</b>; P-011 y P-012 la leen, así que muestran los valores nuevos.`
+        : 'Nueva área: POST /api/common-areas (sin ETag). El 412 solo aplica al editar.';
+      document.getElementById('which').value = areaId || '';
+      if (c.state === 'notfound' || c.data.notFound) { const h = document.getElementById('nf-h1'); if (h) h.focus(); }
+    }
+  });
+
+  // Lee el formulario hacia ctx.data.f
+  function sync() {
+    const F = ctx.data.f, g = id => document.getElementById(id); if (!F || !g('cfg')) return;
+    Object.assign(F, { name: g('f-name').value, open: g('f-open').value, close: g('f-close').value, durH: g('f-dur-h').value, durM: g('f-dur-m').value,
+      cap: g('f-cap').value, advD: g('f-adv-d').value, advH: g('f-adv-h').value, advM: g('f-adv-m').value, ppm: g('f-ppm').value });
+  }
+  function setArea(id) {
+    areaId = id || null;
+    const q = new URLSearchParams(location.search); if (areaId) q.set('id', areaId); else q.delete('id');
+    try { history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q : '')); } catch (e) { }
+    ctx.data = {};
+  }
+
+  document.addEventListener('submit', e => {
+    if (!e.target.matches('#cfg')) return;
+    e.preventDefault(); sync();
+    const btn = document.getElementById('btn-save');
+    CH.sending(btn, 700, () => {
+      const d = ctx.data, f = d.f, E = validate(f);
+      d.conflict = false;
+      if (E.length) { d.errors = E; return ctx.rerender(); }
+      const areas = loadAreas();
+      let a = areaId ? areas.find(x => x.id === areaId) : null;
+      if (a && document.getElementById('race').checked) {           // F10 2a: 412 Precondition Failed
+        otherSave(a); document.getElementById('race').checked = false;
+        d.f = toForm(current()); d.etag = current().etag; d.errors = null; d.conflict = true; return ctx.rerender();
+      }
+      if (a && a.etag !== d.etag) { d.f = toForm(a); d.etag = a.etag; d.errors = null; d.conflict = true; return ctx.rerender(); }
+      const vals = { name: f.name.trim(), open: f.open, close: f.close, capacity: n(f.cap), perUnitMonth: n(f.ppm),
+        maxDurationSeconds: durSecs(f), maxAdvanceSeconds: advSecs(f), updatedAt: stamp(), updatedBy: null };
+      if (a) Object.assign(a, vals, { etag: nextEtag(a.etag) });
+      else {
+        let i = 1; while (areas.some(x => x.id === 'a-nueva-' + i)) i++;
+        a = Object.assign({ id: 'a-nueva-' + i, etag: 'W/"1"', createdAt: stamp() }, vals); areas.push(a);   // 201 Created
+      }
+      saveAreas(areas);
+      CH.go('P-060', 'saved=' + encodeURIComponent(a.id));            // Post/Redirect/Get → P-060#area-{id}
+    });
+  });
+
+  document.addEventListener('click', e => {
+    const fl = e.target.closest('[data-focus]');
+    if (fl) { e.preventDefault(); const el = document.getElementById(fl.dataset.focus); if (el) { el.focus(); el.scrollIntoView({ block: 'center' }); } return; }
+    if (e.target.closest('[data-ch-reset]')) store.set(AREAS_KEY, '');       // "Reiniciar datos" también vuelve a la configuración inicial
+  }, true);
+
+  document.addEventListener('change', e => {
+    const t = e.target;
+    if (t.id === 'which') { setArea(t.value); ctx.rerender(true); }
+    else if (t.id === 'preset' && t.value) {
+      const [, id, vals] = PRESETS[t.value];
+      setArea(id);
+      if (ctx.state !== 'data') { document.getElementById('ch-st-data').checked = true; ctx.state = 'data'; }
+      ensure(ctx); Object.assign(ctx.data.f, vals); ctx.data.errors = null;
+      t.value = ''; ctx.rerender(true);
+    }
+  });
+  document.addEventListener('input', e => {        // actualiza los segundos que se enviarían (nota RN-160)
+    if (!/^f-(dur|adv)-/.test(e.target.id)) return;
+    sync();
+    const show = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = isNaN(v) ? '—' : num(v) + ' s'; };
+    show('dur-secs', durSecs(ctx.data.f)); show('adv-secs', advSecs(ctx.data.f));
+  });
+})();
+</script>
+</body>
+</html>

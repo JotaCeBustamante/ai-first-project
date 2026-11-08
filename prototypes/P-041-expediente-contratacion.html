@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Expediente de contratación · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.title-row{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2) var(--space-4)}
+.head{display:flex;flex-direction:column;gap:var(--space-2)}
+.just{margin:0;padding:var(--space-4) var(--space-6);background:var(--color-surface);border-left:4px solid var(--color-secondary);border-radius:0 var(--radius-md) var(--radius-md) 0;font-size:1.125rem}
+ol.timeline li{position:relative}
+ol.timeline li::before{content:"";position:absolute;left:calc(-1 * var(--space-4) - 7px);top:8px;width:12px;height:12px;border-radius:50%;background:var(--color-surface);border:2px solid var(--color-border)}
+ol.timeline li p{margin:0}
+.panel{border:2px solid var(--color-accent);display:flex;flex-direction:column;gap:var(--space-4)}
+.panel h2{font-size:1.5rem}
+.radios{display:flex;flex-direction:column;gap:var(--space-2);margin-top:var(--space-2)}
+.radios .check{min-height:56px;align-items:center;padding:0 var(--space-4);border:1px solid var(--color-border-subtle);border-radius:var(--radius-md);background:var(--color-surface)}
+.radios .check:has(input:checked){border-color:var(--color-primary);background:var(--color-primary-subtle)}
+.checklist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-2)}
+.checklist li{display:flex;gap:var(--space-2);align-items:flex-start}
+.checklist li svg{flex:none;margin-top:2px}
+.checklist .ok{color:var(--color-success)}
+.checklist .ko{color:var(--color-danger)}
+.checklist .ok span,.checklist .ko span{color:var(--color-text)}
+.nodoc{color:var(--color-text-muted)}
+legend.field-label{padding:0}
+.notfound{align-items:center;text-align:center;margin:0 auto}
+.notfound>svg{color:var(--color-text-muted)}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-041 · Expediente de contratación — 09-ui-spec.md §3.6 y flujo F8 (pasos 3 a 7).
+// Reglas: RN-039 ⚠️ Q24, RN-040, RN-098, RN-099, RN-041 ⚠️ Q25 ⚠️ Q34, RN-031, RN-107, RN-015.
+(function () {
+  const { ICON, TODAY, money, badge, rn, esc, fmtDate, store, alert, fieldError } = CH;
+
+  // ---------- Datos ficticios compartidos con P-040 (mismo seed y misma clave de sesión) ----------
+  const KEY = 'hires-v1';
+  const SEED = CH.DATA.hires; // seed compartido en assets/shell.js
+  const load = () => { try { const s = JSON.parse(store.get(KEY)); if (Array.isArray(s)) return s; } catch (e) { } return JSON.parse(JSON.stringify(SEED)); };
+  let hires = load();
+  const save = () => store.set(KEY, JSON.stringify(hires));
+  const q25 = () => store.get('q25') === '1';
+
+  const STATUS = { Draft: ['neutral', 'Borrador'], Submitted: ['warning', 'Enviada a la Junta'], Approved: ['success', 'Aprobada'] };
+  const DECISION = { Rejected: ['danger', 'Rechazada por la Junta Directiva'], Approved: ['success', 'Aprobada por la Junta Directiva'] };
+  const MSG = {
+    HIRE_REJECTION_REASON_REQUIRED: 'Escribe el motivo del rechazo.',
+    HIRE_NOT_SUBMITTED: 'Esta contratación no está pendiente de decisión.',
+    HIRE_INSUFFICIENT_QUOTES: 'Agrega cotizaciones de al menos 2 proveedores distintos.',
+    HIRE_JUSTIFICATION_TOO_SHORT: 'La justificación debe tener al menos 20 caracteres.'
+  };
+  const statusBadge = s => badge(STATUS[s][0], STATUS[s][1]);
+  const dtTag = iso => { const [d, t] = iso.split('T'); return `<time datetime="${d}T${t}:00-05:00" class="tnum">${fmtDate(d)} ${t}</time>`; };
+  const nowIso = (minus) => { const n = new Date(Date.now() - (minus || 0) * 60000); return `${TODAY}T${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}`; };
+
+  // ---------- Estado de la página ----------
+  let curId = new URLSearchParams(location.search).get('id') || 'h-101';
+  let flash = null;          // { kind, title, body, role }
+  let errors = [];           // [{ field, text, extra }]
+  let form = { decision: '', reason: '' };
+  const hire = () => hires.find(h => h.id === curId);
+  const clearPage = () => { flash = null; errors = []; form = { decision: '', reason: '' }; };
+
+  // Visibilidad (supuestos marcados en las notas RN)
+  function canSee(p, h) {
+    if (p.admin || h.status === 'Approved') return true;
+    if (h.status === 'Submitted') return p.board || q25();       // RN-041 ⚠️ Q25
+    return !!p.board;                                            // Draft: la Junta lo ve en lectura (p. ej. tras rechazar)
+  }
+  // Requisitos de envío (RN-037, RN-038)
+  function sendChecks(h) {
+    const distinct = new Set(h.quotes.map(q => q.ruc)).size;
+    return [
+      { ok: distinct >= 2, text: `Cotizaciones de al menos 2 proveedores distintos (${distinct === 1 ? '1 proveedor' : distinct + ' proveedores'})`, code: 'HIRE_INSUFFICIENT_QUOTES' },
+      { ok: h.justification.trim().length >= 20, text: `Justificación de al menos 20 caracteres (${h.justification.trim().length})`, code: 'HIRE_JUSTIFICATION_TOO_SHORT' }
+    ];
+  }
+
+  // ---------- Vistas ----------
+  function notFoundView() {
+    return `<div class="content read"><div class="page-state notfound">
+      <svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true"><circle cx="21" cy="21" r="13" fill="none" stroke="currentColor" stroke-width="3"/><path d="m31 31 11 11" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>
+      <h1 class="page">No encontramos lo que buscas</h1>
+      <p class="muted">Puede que el enlace esté mal escrito o que ya no exista.</p>
+      <div class="actions"><a href="#" class="btn btn-primary" data-go="home">Ir al inicio</a><a href="#" class="btn btn-secondary" data-go="P-040">Volver</a></div>
+      ${rn('P-091 · 404 · no distingue "no existe" de "no visible para tu rol" (RN-103)')}</div></div>`;
+  }
+
+  function errorSummary() {
+    return alert('danger', errors.length === 1 ? 'Revisa 1 dato antes de continuar' : `Revisa ${errors.length} datos antes de continuar`,
+      `<ul>${errors.map(e => `<li>${e.field ? `<a href="#${e.field}" data-focus="${e.field}">${e.text}</a>` : e.text}${e.extra || ''}</li>`).join('')}</ul>`, 'alert');
+  }
+  const errFor = f => errors.find(e => e.field === f);
+
+  function quotesTable(h) {
+    return `<div class="table-wrap"><table class="dt"><caption class="sr-only">Cotizaciones de ${esc(h.title)}</caption>
+      <thead><tr><th scope="col">Proveedor</th><th scope="col">RUC</th><th scope="col" class="num">Monto</th><th scope="col">Documento</th></tr></thead>
+      <tbody>${h.quotes.map(q => `<tr>
+        <td data-label="Proveedor">${esc(q.supplier)}${q.natural ? ' ' + rn('⚠️ Q34 · persona natural') : ''}</td>
+        <td data-label="RUC" class="tnum">${q.ruc}</td>
+        <td data-label="Monto" class="num">${money(q.amount)}</td>
+        <td data-label="Documento">${q.doc
+          ? `<button type="button" class="btn btn-secondary btn-sm" data-dl="${q.id}" aria-label="Descargar cotización de ${esc(q.supplier)}">Descargar PDF</button>`
+          : `<span class="nodoc">Sin documento</span>`}</td></tr>`).join('')}</tbody></table></div>`;
+  }
+
+  function timeline(h) {
+    if (!h.history.length) return `<div class="empty">${ICON.doc}<p class="muted">Aún no hay decisiones de la Junta Directiva.</p></div>`;
+    return `<ol class="timeline">${h.history.map(d => `<li>${badge(DECISION[d.decision][0], DECISION[d.decision][1])}
+      ${dtTag(d.at)}${d.reason ? `<p>Motivo: ${esc(d.reason)}</p>` : ''}</li>`).join('')}</ol>`;
+  }
+
+  function decisionPanel() {
+    const eDec = errFor('dec-approve'), eRea = errFor('reason');
+    const radio = (v, id, t) => `<label class="check" for="${id}"><input type="radio" name="decision" id="${id}" value="${v}"${form.decision === v ? ' checked' : ''}> ${t}</label>`;
+    return `<section class="card panel" aria-labelledby="h-dec">
+      ${rn('🔒 BoardMember · estado Enviada a la Junta · RN-039 ⚠️ Q24 (basta 1 miembro) · el Administrator no decide (403)')}
+      <h2 id="h-dec">Tu decisión</h2>
+      <form id="decision-form" class="form" novalidate>
+        <fieldset class="field"${eDec ? ' aria-describedby="dec-err"' : ''}><legend class="field-label">¿Qué decide la Junta Directiva?</legend>
+          <div class="radios">${radio('Approved', 'dec-approve', 'Aprobar')}${radio('Rejected', 'dec-reject', 'Rechazar')}</div>
+          ${eDec ? `<div id="dec-err">${fieldError(eDec.text)}</div>` : ''}</fieldset>
+        <div class="field"><label for="reason">Motivo (obligatorio si rechazas)</label>
+          <p class="hint" id="reason-hint">Explica qué falta o qué debe corregir la administración.</p>
+          ${eRea ? `<div id="reason-err">${fieldError(eRea.text)}</div>` : ''}
+          <textarea class="textarea" id="reason" name="reason" rows="4" aria-describedby="reason-hint${eRea ? ' reason-err' : ''}"${eRea ? ' aria-invalid="true"' : ''}>${esc(form.reason)}</textarea>
+          ${rn('RN-098 · motivo obligatorio al rechazar (sin espacios de los extremos) · vuelve a Borrador')}</div>
+        <p class="muted">La decisión queda registrada con el cargo 'Junta Directiva' y la fecha-hora; tu nombre no se muestra a los propietarios.</p>
+        ${rn('RN-040 · se agrega al historial sin borrar las anteriores · RN-041 identificada por cargo')}
+        <div><button type="submit" class="btn btn-primary btn-block">Registrar decisión</button></div>
+      </form></section>`;
+  }
+
+  function adminPanel(h) {
+    const checks = sendChecks(h);
+    return `<section class="card panel" aria-labelledby="h-adm">
+      ${rn('🔒 Administrator · estado Borrador · RN-037/RN-038 requisitos de envío · RN-096/RN-097 solo editable en Draft')}
+      <h2 id="h-adm">Preparar y enviar</h2>
+      <ul class="checklist" aria-label="Requisitos para enviar">${checks.map(k => `<li class="${k.ok ? 'ok' : 'ko'}">${k.ok ? ICON.ok : ICON.err}<span>${k.ok ? 'Cumple' : 'Falta'}: ${k.text}</span></li>`).join('')}</ul>
+      <form id="send-form" class="actions" novalidate>
+        <a href="#" class="btn btn-secondary" data-go="P-042" data-params="id=${h.id}">Editar</a>
+        <button type="submit" class="btn btn-primary">Enviar a la Junta Directiva</button>
+      </form>
+      <p class="muted">Después de enviarla ya no podrás editarla, salvo que la Junta la rechace.</p></section>`;
+  }
+
+  function renderData(c) {
+    const p = c.persona, src = hire();
+    if (!src || !canSee(p, src)) { c.title = 'No encontrado'; return notFoundView(); }
+    // Estado "Vacío": expediente sin decisiones y con una cotización sin documento
+    const h = c.state === 'empty'
+      ? Object.assign({}, src, { history: [], quotes: src.quotes.map((q, i) => i === src.quotes.length - 1 ? Object.assign({}, q, { doc: null }) : q) })
+      : src;
+    c.title = h.title;
+    const meta = h.status === 'Submitted' ? `Enviada el ${fmtDate(h.submitted)}` : h.status === 'Approved' ? `Aprobada el ${fmtDate(h.decided)}` : `Creada el ${fmtDate(h.created)}`;
+
+    let out = `<div class="head">
+      <a href="#" class="back" data-go="P-040">← Contrataciones</a>
+      <nav class="crumbs" aria-label="Migas"><ol><li><a href="#" data-go="P-010">Inicio</a></li><li><a href="#" data-go="P-040">Contrataciones</a></li><li aria-current="page">${esc(h.title)}</li></ol></nav>
+      <div class="title-row"><h1 class="page">${esc(h.title)}</h1>${statusBadge(h.status)}</div>
+      <p class="muted tnum">${meta}</p></div>`;
+    if (errors.length) out += errorSummary();
+    if (flash) out += alert(flash.kind, flash.title, flash.body || '', flash.role);
+
+    out += `<section class="sec" aria-labelledby="h-quotes"><h2 id="h-quotes">Cotizaciones</h2>
+      ${quotesTable(h)}${rn('RN-107 · el PDF se entrega por la API con la misma política de acceso · RN-041 cotizaciones visibles a quien ve financieros')}
+      <div id="dl-status" role="status" aria-live="polite"></div></section>`;
+    out += `<section class="sec" aria-labelledby="h-just"><h2 id="h-just">Justificación de la elección</h2>
+      <blockquote class="just">${esc(h.justification)}</blockquote></section>`;
+    out += `<section class="sec" aria-labelledby="h-hist"><h2 id="h-hist">Historial</h2>
+      ${rn('RN-040 · orden ascendente, sin borrar entradas · RN-041 / RN-031: por cargo, nunca el nombre')}${timeline(h)}</section>`;
+
+    if (p.board && h.status === 'Submitted') out += decisionPanel();
+    else if (p.admin && h.status === 'Draft') out += adminPanel(h);
+    else if (p.admin && h.status === 'Submitted') out += (CH.params().get('sent') === '1' ? alert('success', 'Enviaste la contratación a la Junta Directiva.', '', 'status') : '') + alert('info', 'Esperando la decisión de la Junta Directiva', '<p>No puedes editarla mientras está enviada. La administración no registra decisiones.</p>') + rn('El Administrator no decide (403, RN-039)');
+    else if (!p.admin && !p.board && h.status === 'Submitted') out += rn('⚠️ Q25 simulado: el propietario ve el expediente antes de la decisión');
+    return `<div class="content detail">${out}</div>`;
+  }
+
+  const options = hires.map(h => `<option value="${h.id}">${esc(h.title)}</option>`).join('');
+  const ctx = CH.init({
+    code: 'P-041', title: 'Expediente de contratación', active: 'P-040',
+    roles: ['marco', 'rosa', 'luis', 'ana', 'carla'],
+    states: [['data', 'Con datos'], ['empty', 'Vacío'], ['loading', 'Cargando'], ['error', 'Error'], ['notfound', 'No encontrado']],
+    extraControls: `<label for="hireSel">Expediente</label><select id="hireSel">${options}</select>
+      <label for="srv" style="margin-top:var(--space-2)">Respuesta del servidor al registrar</label><select id="srv">
+        <option value="ok">200 · éxito</option><option value="409">409 · otro miembro decidió antes</option><option value="422">422 · HIRE_NOT_SUBMITTED</option></select>
+      <label class="chk" for="q25"><input type="checkbox" id="q25"> Q25: propietarios ven "Por decidir"</label>
+      <button class="proto-btn" id="reset" type="button">Restablecer datos de ejemplo</button>`,
+    route: () => `/supplier-hires/${curId}`,
+    menuCounts: c => c.persona.board && (c.state === 'data' || c.state === 'empty') ? { 'P-040': c.state === 'empty' ? 0 : hires.filter(h => h.status === 'Submitted').length } : {},
+    render(c) {
+      if (!c.persona.fin) { c.title = 'Acceso denegado'; return CH.deniedView() + `<div class="content">${rn('RN-015 · inquilina sin vínculo Owner → 403 (P-090), también para descargar PDF (RN-107)')}</div>`; }
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      if (c.state === 'notfound') { c.title = 'No encontrado'; return notFoundView(); }
+      return renderData(c);
+    }
+  });
+  const sel = document.getElementById('hireSel');
+  if (hire()) sel.value = curId;
+  document.getElementById('q25').checked = q25();
+
+  // ---------- Interacciones (delegación en document) ----------
+  const goData = () => { if (ctx.state !== 'data') { document.getElementById('ch-st-data').checked = true; ctx.state = 'data'; } };
+  const srvMode = () => document.getElementById('srv').value;
+
+  document.addEventListener('submit', e => {
+    const f = e.target;
+    if (f.id === 'decision-form') {
+      e.preventDefault();
+      const checked = f.querySelector('input[name="decision"]:checked');
+      form = { decision: checked ? checked.value : '', reason: f.elements.reason.value };
+      errors = []; flash = null;
+      if (!form.decision) errors.push({ field: 'dec-approve', text: 'Elige si la Junta Directiva aprueba o rechaza.' });
+      else if (form.decision === 'Rejected' && !form.reason.trim()) errors.push({ field: 'reason', text: MSG.HIRE_REJECTION_REASON_REQUIRED });
+      if (errors.length) { ctx.rerender(); return; }
+      CH.sending(f.querySelector('button[type="submit"]'), 800, () => {
+        const h = hire(), mode = srvMode();
+        goData();
+        if (mode === '422') {
+          errors = [{ text: MSG.HIRE_NOT_SUBMITTED + ' Recarga la página para ver su estado actual.' }];
+        } else if (mode === '409') {
+          // Otro miembro aprobó segundos antes: se recarga el expediente y desaparece el panel
+          h.history.push({ decision: 'Approved', at: nowIso(1) });
+          h.status = 'Approved'; h.decided = TODAY; save();
+          form = { decision: '', reason: '' };
+          flash = { kind: 'warning', title: 'Otro miembro de la Junta registró una decisión. Revisa el historial actualizado.', body: rn('409 · §3.0.4 conflicto · datos recargados'), role: 'alert' };
+        } else {
+          const entry = { decision: form.decision, at: nowIso() };
+          if (form.decision === 'Rejected') { entry.reason = form.reason.trim(); h.status = 'Draft'; h.rejected = TODAY; }
+          else { h.status = 'Approved'; h.decided = TODAY; delete h.rejected; }
+          h.history.push(entry); save();
+          form = { decision: '', reason: '' };
+          flash = { kind: 'success', title: 'Registraste tu decisión',
+            body: `<p>${entry.decision === 'Rejected' ? 'La contratación volvió a Borrador para que la administración la corrija.' : 'La contratación quedó aprobada.'}</p>`, role: 'status' };
+        }
+        ctx.rerender(true);
+      });
+      return;
+    }
+    if (f.id === 'send-form') {
+      e.preventDefault();
+      const h = hire(); errors = []; flash = null;
+      sendChecks(h).filter(k => !k.ok).forEach(k => errors.push({ text: MSG[k.code],
+        extra: ` <a href="#" data-go="P-042" data-params="id=${h.id}">Corregir en Editar contratación</a>` }));
+      if (errors.length) { ctx.rerender(); return; }
+      CH.sending(f.querySelector('button[type="submit"]'), 800, () => {
+        goData();
+        h.status = 'Submitted'; h.submitted = TODAY; save();
+        flash = { kind: 'success', title: 'Enviaste la contratación a la Junta Directiva.', role: 'status' };
+        ctx.rerender(true);
+      });
+    }
+  });
+
+  document.addEventListener('click', e => {
+    const dl = e.target.closest('[data-dl]');
+    if (dl) {
+      const h = hire(), q = h.quotes.find(x => x.id === dl.dataset.dl);
+      document.getElementById('dl-status').innerHTML = alert('success', `Se descargó ${esc(q.doc)} (simulado)`,
+        `<p>En la aplicación real: <code>GET /api/supplier-hires/${h.id}/quotes/${q.id}/document</code></p>`);
+      return;
+    }
+    const fx = e.target.closest('[data-focus]');
+    if (fx) { e.preventDefault(); const t = document.getElementById(fx.dataset.focus); if (t) { t.focus(); t.scrollIntoView({ block: 'center' }); } return; }
+    if (e.target.id === 'reset') { try { sessionStorage.removeItem('ch:' + KEY); } catch (err) { } hires = load(); clearPage(); ctx.rerender(); }
+  });
+
+  document.addEventListener('change', e => {
+    const t = e.target;
+    if (t.id === 'hireSel') {
+      curId = t.value; clearPage();
+      const q = new URLSearchParams(location.search); q.set('id', curId); q.set('role', ctx.roleKey);
+      history.replaceState(null, '', '?' + q);
+      ctx.rerender(true);
+    } else if (t.id === 'q25') { store.set('q25', t.checked ? '1' : '0'); ctx.rerender(); }
+  });
+  // Cambiar de rol o de estado limpia avisos y errores (antes de que el shell vuelva a pintar)
+  document.addEventListener('change', e => { if (e.target.id === 'ch-role' || e.target.name === 'ch-st') clearPage(); }, true);
+})();
+</script>
+</body>
+</html>

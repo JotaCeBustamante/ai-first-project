@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Detalle de reserva · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.head{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3)}
+.add-row{display:flex;flex-wrap:wrap;gap:var(--space-3);align-items:flex-end}
+.add-row .field{flex:1 1 16rem}
+.add-row .btn{flex:1 1 100%}
+@container shell (min-width:37.5em){.add-row .btn{flex:0 0 auto}}
+.privacy{display:flex;flex-direction:column;gap:var(--space-2)}
+.privacy .check{font-weight:600}
+.btn-danger-outline{background:var(--color-surface);color:var(--color-danger);border-color:var(--color-danger)}
+.btn-danger-outline:hover{background:var(--color-danger-subtle)}
+.sep{border:0;border-top:1px solid var(--color-border-subtle);margin:0}
+table.dt form{margin:0}
+table.dt td.act{width:1%;white-space:nowrap}
+.locked{display:flex;gap:var(--space-3);align-items:flex-start;color:var(--color-text-muted);margin:0}
+.locked svg{flex:none;margin-top:2px}
+.summary a{font-weight:600}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-015 · Detalle de reserva — 09-ui-spec.md §3.3 y flujos F3, F4, F12.
+// Reglas: RN-086 (invitados solo antes del inicio), RN-023 (aforo), RN-087 (aviso de privacidad),
+// RN-083/RN-161 (cancelar antes del inicio), RN-085 (Realizada calculada), matriz B5 (el Administrator no edita invitados).
+(function () {
+  const { DATA, ICON, esc, fmtDate, rn, alert, fieldError } = CH;
+  const DAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+  const LOCAL = {
+    'r-9010': { id: 'r-9010', area: 'Salón de fiestas', unit: 'A-502', host: 'Ana Quispe', date: '2026-12-12', start: '19:00', end: '23:00', status: 'Confirmed', unitPeople: 2, guestsCount: 38 },
+    'r-9011': { id: 'r-9011', area: 'Parrilla', unit: 'A-1104', host: 'Rosa Huamán', date: '2026-12-19', start: '12:00', end: '16:00', status: 'Confirmed', unitPeople: 3, guestsCount: 6 }
+  };
+  const DEFAULT_ID = { ana: 'r-8841', carla: 'r-8933', luis: 'r-8955', rosa: 'r-8841', rosaRes: 'r-8841' };
+  const POOL = ['Lucía Torres', 'Pedro Salinas', 'Carmen Ruiz', 'José Ccahuana', 'Rosa Llanos', 'Fernando Alva', 'Gabriela Inga', 'Hugo Tapia',
+    'Inés Rivas', 'Martín Chávez', 'Elena Vílchez', 'Rodrigo Salas', 'Camila Ñique', 'Paola Mendoza', 'Ricardo Lazo', 'Milagros Torres',
+    'Diego Huerta', 'Valeria Soto', 'Andrés Paz', 'Sofía Paredes', 'Javier Cárdenas', 'Mariana Quispe', 'Luis Huamaní', 'Claudia Benavides',
+    'Óscar Palomino', 'Daniela Arana', 'Renzo Gutiérrez', 'Patricia Yupanqui', 'César Montoya', 'Natalia Flores', 'Alonso Vega', 'Karina Ccori',
+    'Bruno Espinoza', 'Fiorella Rojas', 'Gustavo Pinedo', 'Lorena Castillo', 'Raúl Aguirre', 'Silvia Cáceres', 'Tomás Valdivia', 'Ximena Lara',
+    'Walter Ugarte', 'Yesenia Ponce', 'Hernán Zapata', 'Verónica Saavedra'];
+  const NOW_STARTED = 10;   // "Ya empezó": son las {inicio}+10 min (F12 paso 4: 19:10)
+
+  const weekday = d => { const [y, m, dd] = d.split('-').map(Number); return DAYS[new Date(y, m - 1, dd).getDay()]; };
+  const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+  const toHHMM = n => `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;
+  const capacityOf = r => (DATA.areas.find(a => a.name === r.area) || { capacity: 40 }).capacity;
+
+  // Reserva: CH.DATA → creada en P-013 (sessionStorage) → locales. Si no existe: null (404)
+  function find(id) {
+    const known = CH.reservation(id);
+    if (known) return Object.assign({}, known);
+    const saved = CH.store.get('res:' + id);
+    if (saved) { try { return JSON.parse(saved); } catch (e) { } }
+    return LOCAL[id] ? Object.assign({}, LOCAL[id]) : null;
+  }
+
+  // Lista de invitados con ingreso según el estado simulado
+  function buildGuests(r, mode, cap) {
+    let names = r.guests ? r.guests.slice() : POOL.slice(0, r.guestsCount || 0);
+    if (mode === 'empty') names = [];
+    if (mode === 'full') { const need = cap - r.unitPeople; let i = 0; while (names.length < need) { const n = POOL[i % POOL.length] + (i >= POOL.length ? ' (2)' : ''); if (!names.includes(n)) names.push(n); i++; } names = names.slice(0, need); }
+    const s = toMin(r.start);
+    return names.map((name, i) => {
+      let checkIn = null;
+      if (mode === 'started' && i % 3 !== 2) checkIn = s - 12 + (i * 3) % 21;          // entre {inicio}-12 y {inicio}+8
+      if (mode === 'completed' && i % 7 !== 6) checkIn = s - 10 + (i * 7) % 95;
+      return { id: 'g' + (i + 1), name, checkIn: checkIn == null ? null : toHHMM(checkIn) };
+    });
+  }
+
+  // Momento de la reserva respecto de "ahora" (estado simulado o hora común CH.NOW, hoy 04/11/2026)
+  function phase(c, r) {
+    if (r.status === 'Cancelled' || c.state === 'cancelled') return 'cancelled';
+    if (r.status === 'Completed' || c.state === 'completed' || CH.hasEnded(r)) return 'completed';
+    if (c.state === 'started' || CH.hasStarted(r)) return 'started';      // RN-083, RN-086, RN-161: desde el inicio
+    return 'before';
+  }
+
+  function setup(c) {
+    const d = c.data;
+    if (d.r !== undefined) return d;
+    const id = c.params.get('id') || DEFAULT_ID[c.roleKey];
+    d.id = id;
+    d.r = c.state === 'notfound' ? null : find(id);
+    if (!d.r) return d;
+    d.cap = capacityOf(d.r);
+    if (d.r.unitPeople == null) d.r.unitPeople = 2;   // dato no registrado en CH.DATA (reservas canceladas)
+    const mode = c.state === 'data' && (d.r.status === 'Completed' || CH.hasEnded(d.r)) ? 'completed'
+      : c.state === 'data' && CH.hasStarted(d.r) ? 'started' : c.state;
+    d.guests = buildGuests(d.r, mode, d.cap);
+    d.nextId = d.guests.length + 1;
+    d.name = ''; d.privacy = false; d.errors = null; d.status = null;
+    return d;
+  }
+
+  function errorSummary(errors) {
+    return `<div class="alert alert-danger summary" role="alert" tabindex="-1">${ICON.err}<div class="alert-body">
+      <p class="alert-title">${errors.length === 1 ? 'Hay 1 problema' : `Hay ${errors.length} problemas`}</p>
+      <ul>${errors.map(e => `<li>${e.field ? `<a href="#${e.field}" data-focus="${e.field}">${e.text}</a>` : e.text}</li>`).join('')}</ul>
+      ${errors.map(e => rn(e.code)).join(' ')}</div></div>`;
+  }
+
+  function guestsTable(d, editable) {
+    if (!d.guests.length) return `<div class="empty">${ICON.doc}<p class="muted">Esta reserva no tiene invitados.${editable ? ' Agrégalos con el formulario de abajo: portería los verá el día de la reserva.' : ''}</p></div>`;
+    const rows = d.guests.map(g => `<tr>
+        <td data-label="Nombre">${esc(g.name)}</td>
+        <td data-label="Ingreso" class="tnum">${g.checkIn ? `<time datetime="${d.r.date}T${g.checkIn}:00-05:00">${g.checkIn}</time>` : '<span aria-label="Sin ingreso">—</span>'}</td>
+        ${editable ? `<td data-label="Acción" class="act"><form data-remove="${g.id}"><button class="btn btn-secondary btn-sm" type="submit" aria-label="Quitar a ${esc(g.name)}">Quitar</button></form></td>` : ''}
+      </tr>`).join('');
+    return `<div class="table-wrap"><table class="dt"><caption class="sr-only">Invitados de la reserva</caption>
+      <thead><tr><th scope="col">Nombre</th><th scope="col">Ingreso</th>${editable ? '<th scope="col">Acción</th>' : ''}</tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  }
+
+  function addForm(d) {
+    const errs = d.errors || [], eName = errs.find(e => e.field === 'guest-name'), ePriv = errs.find(e => e.field === 'privacy');
+    const first = d.guests.length === 0;
+    const total = d.r.unitPeople + d.guests.length;
+    return `<form id="add-guest" class="form" novalidate aria-labelledby="h-add">
+      <h3 id="h-add">Agregar invitado</h3>
+      <div class="add-row">
+        <div class="field"><label for="guest-name">Nombre completo <span class="req">(obligatorio)</span></label>
+          <p class="hint" id="guest-name-hint">Como figura en su documento. Portería lo verá para dejarlo pasar.</p>
+          <input class="input" id="guest-name" name="name" autocomplete="off" maxlength="120" value="${esc(d.name)}"
+            aria-describedby="guest-name-hint${eName ? ' guest-name-err' : ''}"${eName ? ' aria-invalid="true"' : ''}>
+          ${eName ? `<div id="guest-name-err">${fieldError(eName.text)}</div>` : ''}</div>
+        <button class="btn btn-secondary" type="submit" id="add-btn">Agregar</button>
+      </div>
+      <p class="muted tnum" aria-live="polite">Personas: ${total} de ${d.cap}. ${total >= d.cap ? 'El área ya está en su aforo máximo.' : `Puedes agregar ${d.cap - total} ${d.cap - total === 1 ? 'invitado más' : 'invitados más'}.`}</p>
+      ${rn('RN-023 · aforo = personas de la unidad + invitados ≤ ' + d.cap)}
+      ${first ? `<div class="alert alert-info">${ICON.info}<div class="alert-body privacy">
+        <p class="alert-title">Aviso de privacidad de invitados</p>
+        <p>Los nombres de tus invitados solo se usan para que portería los deje pasar y se eliminan 90 días después de la reserva. No los compartimos con otros residentes.</p>
+        <label class="check" for="privacy"><input type="checkbox" id="privacy" name="privacy"${d.privacy ? ' checked' : ''}${ePriv ? ' aria-invalid="true" aria-describedby="privacy-err"' : ''}> Informé a mis invitados de este aviso</label>
+        ${ePriv ? `<div id="privacy-err">${fieldError(ePriv.text)}</div>` : ''}
+        ${rn('RN-087 · ⚠️ Q18/Q21 texto legal pendiente · obligatorio con el primer invitado')}</div></div>` : ''}
+    </form>`;
+  }
+
+  function cancelBlock(d) {
+    return `<hr class="sep"><div class="sec">
+      <div><a href="#" class="btn btn-danger-outline btn-block" data-go="P-016" data-params="id=${esc(d.r.id)}">Cancelar reserva</a></div>
+      <p class="muted">Solo se puede cancelar antes de las ${d.r.start} del ${fmtDate(d.r.date)}. Te pediremos confirmarlo.</p>
+      ${rn('RN-083 / RN-161 · cancelar solo antes del inicio · P-016 es una ConfirmPage')}</div>`;
+  }
+
+  function renderData(c) {
+    const d = c.data, r = d.r, p = c.persona;
+    const admin = !!p.admin && !p.units.includes(r.unit);
+    const ph = phase(c, r);
+    const status = ph === 'cancelled' ? 'Cancelled' : ph === 'completed' ? 'Completed' : 'Confirmed';
+    const editable = ph === 'before' && !admin;
+    const total = r.unitPeople + d.guests.length;
+    c.title = r.area;
+
+    const back = admin ? ['P-062', 'Reservas del condominio'] : ['P-014', 'Mis reservas'];
+    let h = `<div><nav class="crumbs" aria-label="Migas"><ol><li><a href="#" data-go="${back[0]}">${back[1]}</a></li><li aria-current="page">${esc(r.area)} · ${fmtDate(r.date)}</li></ol></nav>
+      <a href="#" class="back" data-go="${back[0]}">← ${back[1]}</a>
+      <div class="head"><h1 class="page">${esc(r.area)}</h1>${CH.resBadge(status)}</div>
+      ${status === 'Completed' ? rn('RN-085 · Realizada se calcula al consultar (fin de la franja ya pasó)') : ''}</div>`;
+
+    if (d.errors && d.errors.length) h += errorSummary(d.errors);
+    else if (d.status) h += alert(d.status.kind, d.status.title, d.status.text ? `<p>${d.status.text}</p>` : '', 'status');
+
+    h += `<section class="card" aria-label="Datos de la reserva"><dl class="dl">
+      <dt>Fecha</dt><dd><time datetime="${r.date}" class="tnum">${weekday(r.date)} ${fmtDate(r.date)}</time></dd>
+      <dt>Horario</dt><dd><time datetime="${r.date}T${r.start}:00-05:00" class="tnum">${r.start} – ${r.end}</time></dd>
+      <dt>Unidad</dt><dd>${esc(r.unit)}</dd>
+      ${admin ? `<dt>Anfitrión</dt><dd>${esc(r.host)}</dd>` : ''}
+      <dt>Personas</dt><dd class="tnum">${total} de ${d.cap} <span class="muted">(${r.unitPeople} de ${admin ? 'la' : 'tu'} unidad y ${d.guests.length} ${d.guests.length === 1 ? 'invitado' : 'invitados'})</span></dd>
+    </dl></section>`;
+
+    if (ph === 'cancelled') {
+      const by = r.cancelledBy || 'host';
+      const byText = by === 'admin' ? 'la administración' : admin ? 'el anfitrión' : 'ti';
+      const at = r.cancelledAt || `${CH.TODAY} 15:00`;
+      const [ad, at2] = at.split(' ');
+      h += `<section class="sec" aria-labelledby="h-cancel"><h2 id="h-cancel">Cancelación</h2>
+        <dl class="dl"><dt>Cancelada por</dt><dd>${byText}</dd>
+        <dt>Fecha</dt><dd><time datetime="${ad}T${at2}:00-05:00" class="tnum">${fmtDate(ad)} ${at2}</time></dd></dl>
+        <p class="muted">${admin ? 'Los' : 'Tus'} invitados ya no figuran en portería. Esta reserva no tiene acciones.</p>
+        ${rn('RN-168 · se conservan cancelledBy y cancelledAt · RN-026 sale de portería en ≤ 60 s')}</section>`;
+      return `<div class="content detail">${h}</div>`;
+    }
+
+    h += `<section class="sec" aria-labelledby="h-guests"><h2 id="h-guests">Invitados (${d.guests.length})</h2>
+      ${guestsTable(d, editable)}`;
+    if (editable) h += addForm(d) + rn('RN-086 · agregar/quitar solo antes del inicio · Idempotency-Key en POST …/guests');
+    else if (ph === 'started' || ph === 'completed')
+      h += `<p class="locked">${ICON.info}<span>La reserva ya empezó: la lista de invitados no se puede cambiar.</span></p>${rn('RN-086 · sin formulario ni botones Quitar desde el inicio')}`;
+    else if (admin)
+      h += `<p class="locked">${ICON.info}<span>Solo el anfitrión puede cambiar la lista de invitados.</span></p>${rn('Matriz B5 · el Administrator consulta y cancela, no edita invitados')}`;
+    h += `</section>`;
+
+    if (ph === 'before') h += cancelBlock(d);
+    return `<div class="content detail">${h}</div>`;
+  }
+
+  function notFoundView(c) {
+    c.title = 'No encontrado';
+    return `<div class="content read"><div class="page-state"><span style="color:var(--color-text-muted)">${ICON.big}</span>
+      <h1 class="page" tabindex="-1" id="nf-h1">No encontramos lo que buscas</h1>
+      <p class="muted">Puede que el enlace esté mal escrito o que ya no exista.</p>
+      <div class="actions"><a href="#" class="btn btn-primary btn-block" data-go="home">Ir al inicio</a>
+      <a href="#" class="btn btn-secondary btn-block" data-go="${c.persona.admin ? 'P-062' : 'P-014'}">Volver</a></div>
+      ${rn('P-091 · 404 · RN-103: igual si no existe o es de otro condominio')}</div></div>`;
+  }
+
+  const ctx = CH.init({
+    code: 'P-015', title: 'Detalle de reserva', active: 'P-014',
+    roles: ['ana', 'carla', 'luis', 'rosa', 'rosaRes'],
+    states: [['data', 'Con datos'], ['empty', 'Vacío (sin invitados)'], ['full', 'Aforo lleno'], ['started', 'Ya empezó'],
+             ['completed', 'Realizada'], ['cancelled', 'Cancelada'], ['notfound', 'No existe (404)'], ['loading', 'Cargando'], ['error', 'Error']],
+    extraControls: `<label class="chk" for="late"><input type="checkbox" id="late"> Al enviar, ya pasó la hora de inicio</label>`,
+    route: c => `/reservations/${c.params.get('id') || DEFAULT_ID[c.roleKey]}`,
+    render(c) {
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      const d = setup(c);
+      if (!d.r) return notFoundView(c);
+      const p = c.persona;
+      if (!p.admin && !p.units.includes(d.r.unit)) { c.title = 'Acceso denegado'; return CH.deniedView(); }
+      return renderData(c);
+    },
+    afterRender() { const h = document.getElementById('nf-h1'); if (h) h.focus(); }
+  });
+
+  // ---------- Interacciones (delegación en document) ----------
+  const late = () => { const el = document.getElementById('late'); return !!(el && el.checked); };
+  const TOO_LATE = { code: 'RESERVATION_GUEST_EDIT_TOO_LATE', text: 'La reserva ya empezó: no se puede cambiar la lista de invitados.' };
+
+  function submitAdd(form) {
+    const d = ctx.data;
+    const name = form.querySelector('#guest-name').value.trim().replace(/\s+/g, ' ');
+    const privEl = form.querySelector('#privacy');
+    d.name = name; d.privacy = !!(privEl && privEl.checked); d.status = null;
+    const errors = [];
+    if (!name) errors.push({ field: 'guest-name', code: 'Validación de formulario', text: 'Escribe el nombre completo del invitado.' });
+    else if (name.split(' ').length < 2) errors.push({ field: 'guest-name', code: 'Validación de formulario', text: 'Escribe nombre y apellido del invitado.' });
+    if (privEl && !privEl.checked) errors.push({ field: 'privacy', code: 'GUEST_PRIVACY_NOTICE_REQUIRED · RN-087', text: 'Marca la casilla del aviso de privacidad para registrar invitados.' });
+    if (errors.length) { d.errors = errors; ctx.rerender(); return; }
+
+    CH.sending(form.querySelector('#add-btn'), 700, () => {
+      const total = d.r.unitPeople + d.guests.length + 1;
+      if (late()) d.errors = [{ code: TOO_LATE.code + ' · RN-086', text: TOO_LATE.text }];
+      else if (total > d.cap) d.errors = [{ field: 'guest-name', code: 'RESERVATION_EXCEEDS_CAPACITY · RN-023', text: `Son ${total} personas y el aforo es ${d.cap}. Quita ${total - d.cap}.` }];
+      else {
+        d.guests.unshift({ id: 'g' + (d.nextId++), name, checkIn: null });
+        d.errors = null; d.name = ''; d.privacy = false;
+        d.status = { kind: 'success', title: `Agregaste a ${name}` };
+      }
+      ctx.rerender(!d.errors);
+      if (!d.errors) { const i = document.getElementById('guest-name'); if (i) i.focus(); }
+    });
+  }
+
+  function submitRemove(form) {
+    const d = ctx.data, g = d.guests.find(x => x.id === form.dataset.remove);
+    if (!g) return;
+    d.status = null;
+    CH.sending(form.querySelector('button'), 600, () => {
+      if (late()) d.errors = [{ code: TOO_LATE.code + ' · RN-086', text: TOO_LATE.text }];
+      else {
+        d.guests = d.guests.filter(x => x !== g);
+        d.errors = null;
+        d.status = { kind: 'success', title: `Quitaste a ${g.name}`, text: 'Portería ya no lo verá en la lista.' };
+      }
+      ctx.rerender(true);
+    });
+  }
+
+  document.addEventListener('submit', e => {
+    const f = e.target;
+    if (f.id === 'add-guest') { e.preventDefault(); submitAdd(f); }
+    else if (f.matches('form[data-remove]')) { e.preventDefault(); submitRemove(f); }
+  });
+  document.addEventListener('click', e => {
+    const a = e.target.closest('a[data-focus]'); if (!a) return;
+    e.preventDefault();
+    const el = document.getElementById(a.dataset.focus); if (el) { el.focus(); el.scrollIntoView({ block: 'center' }); }
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Verificación en dos pasos · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+#mfa .btn-primary{width:100%}
+.code-input{width:12rem;max-width:100%;font-family:var(--font-family-mono);font-size:1.5rem;letter-spacing:.25em;text-align:left}
+.code-input.recovery{width:14rem;text-transform:uppercase}
+.mfa-links{display:flex;flex-direction:column;gap:var(--space-2);align-items:flex-start}
+.mfa-links p{margin:0}
+.mfa-links a{display:inline-flex;align-items:center;min-height:44px;font-weight:600}
+.mfa-notes{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.proto-x{margin-top:var(--space-2)}
+.proto-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;margin-top:var(--space-2)}
+.proto-info{color:var(--proto-muted);margin:var(--space-2) 0 0;max-width:52rem}
+.proto-info b{color:var(--proto-fg);font-family:var(--font-family-mono)}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-002 · Verificar código MFA — 09-ui-spec.md §3.1 (incluye ?method=recovery). Flujo F2.
+// Reglas: RN-008 (TOTP en todo inicio de sesión de Adm/Junta), RN-140, RN-112 (códigos de recuperación de un solo uso),
+// RN-111 (5 fallos de TOTP → bloqueo 900 s), RN-153 (mensaje neutro), 429 con Retry-After, sesión parcial vencida → P-001.
+(function () {
+  const { ICON, rn, alert, fieldError, esc, store } = CH;
+  const TOTP = '482913';                                   // código que hoy muestra la app autenticadora (demo)
+  const RECOVERY = ['K7QF-9M2D', 'P3XN-8RWC', 'H4TZ-6LJB'];  // códigos de recuperación sin usar (demo)
+  const USED_SEED = ['7KQ2-M9XD'];                          // ya usado antes (el ejemplo del spec)
+  const MSG_FAILED = 'No pudimos iniciar sesión con esos datos. Revisa tu correo, tu contraseña o tu código.';
+  const LOCK_MS = 900 * 1000, MAX_FAILS = 5, RATE = 10;
+  const NEXT = { CondominiumSelectionRequired: 'P-005', ConsentRequired: 'P-007' };
+
+  let method = CH.params().get('method') === 'recovery' ? 'recovery' : 'totp';
+  const fails = {};          // persona → { n, until }  (RN-111)
+  let hits = [];             // envíos del último minuto (rate limit 10/min)
+  let status = null;         // { kind:'failed' } | { kind:'format', value } | { kind:'429', secs }
+  let partialExpired = false;
+  let offset = 0;
+  let focusInput = true;
+  let ready = false;
+  const now = () => Date.now() + offset;
+  const clock = t => new Date(t).toLocaleTimeString('es-PE', { hour12: false, timeZone: 'America/Lima' });
+  const usedCodes = () => { try { return JSON.parse(store.get('mfa-used-v1')) || USED_SEED.slice(); } catch (e) { return USED_SEED.slice(); } };
+  const setUsed = list => store.set('mfa-used-v1', JSON.stringify(list));
+
+  const FORMAT_MSG = {
+    totp: 'Escribe los 6 dígitos del código, sin espacios ni letras.',
+    recovery: 'Escribe el código con el formato de 4 caracteres, guion y 4 caracteres. Ejemplo: 7KQ2-M9XD.'
+  };
+
+  function view(c) {
+    const st = c.state, rec = method === 'recovery';
+    if (st === 'error') { c.title = 'Algo salió mal'; return errorView(); }
+    c.title = rec ? 'Usar un código de recuperación' : 'Verificación en dos pasos';
+    const s = status || ({ failed: { kind: 'failed' }, locked: { kind: 'failed', locked: true }, '429': { kind: '429', secs: 38 },
+      format: { kind: 'format', value: rec ? 'K7QF9M' : '4829' } })[st] || null;
+    const busy = st === 'loading';
+    let value = '';
+    if (s && s.kind === 'format') value = s.value;
+    else if (!s && (st === 'data' || busy)) value = rec ? RECOVERY[0] : TOTP;
+    const fmtErr = s && s.kind === 'format';
+    const id = rec ? 'recovery-code' : 'code';
+
+    let h = `<h1 class="page">${c.title}</h1>`;
+    if (!rec) h += `<p class="muted" id="code-hint">Abre tu app autenticadora y escribe el código de 6 dígitos.</p>`;
+
+    if (s && s.kind === 'failed') h += alert('danger', MSG_FAILED,
+      rn(s.locked ? 'RN-111 · cuenta bloqueada 900 s tras 5 fallos · RN-153 · mismo texto: la pantalla no revela el bloqueo'
+                  : 'SIGN_IN_FAILED (422) · mismo texto que P-001 · RN-153 · ' + (rec ? 'RN-112 · un código ya usado también da este error' : 'RN-111 · el fallo suma al contador de bloqueo')), 'alert');
+    if (s && s.kind === '429') h += alert('danger', `Demasiados intentos. Espera ${s.secs} segundos e inténtalo de nuevo.`,
+      rn('429 · rate limit 10 envíos/min · segundos de Retry-After'), 'alert');
+    if (fmtErr) h += alert('danger', 'Revisa el código antes de continuar',
+      `<ul><li><a href="#${id}" data-focus="${id}">${FORMAT_MSG[method]}</a></li></ul>` +
+      rn('Validación de formato (pattern) · no se envía al servidor ni suma al bloqueo'), 'alert');
+    if (st === 'expired' && !status) h += `<p class="rn always">Sesión parcial vencida: al pulsar "Verificar" vuelve a P-001 con reason=expired.</p>`;
+    if (busy) h += `<p class="rn always">SSR: no hay estado de carga en el cliente. 🧩 JS opcional: el botón pasa a "Enviando…" (aria-disabled) para evitar dobles envíos.</p>`;
+
+    const described = [rec ? 'recovery-hint' : 'code-hint', fmtErr ? id + '-error' : ''].filter(Boolean).join(' ');
+    const input = rec
+      ? `<input class="input code-input recovery" id="recovery-code" name="recoveryCode" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="9" required aria-describedby="${described}"${fmtErr ? ' aria-invalid="true"' : ''} value="${esc(value)}">`
+      : `<input class="input code-input" id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="\\d{6}" required aria-describedby="${described}"${fmtErr ? ' aria-invalid="true"' : ''} value="${esc(value)}">`;
+
+    h += `<form class="form" id="mfa" method="post" action="/api/auth/mfa" novalidate>
+      <div class="field"><label for="${id}">${rec ? 'Código de recuperación' : 'Código de verificación'} <span class="req">(obligatorio)</span></label>
+        ${rec ? '<p class="hint" id="recovery-hint">Ejemplo: 7KQ2-M9XD. Cada código sirve una sola vez.</p>' : ''}
+        ${input}
+        ${fmtErr ? `<div id="${id}-error">${fieldError(FORMAT_MSG[method])}</div>` : ''}</div>
+      <button class="btn btn-primary" type="submit"${busy ? ' aria-disabled="true"' : ''}>${busy ? 'Enviando…' : 'Verificar'}</button>
+    </form>
+    <div class="mfa-links">
+      ${rec ? `<a href="?" data-method="totp">Usar el código de la app autenticadora</a>`
+            : `<p>¿No tienes tu celular?</p><a href="?method=recovery" data-method="recovery">Usar un código de recuperación →</a>`}
+      <a href="#" data-go="P-001">← Volver a iniciar sesión</a>
+    </div>
+    <div class="mfa-notes">${rn('RN-008 · TOTP en todo inicio de sesión de Administración o Junta Directiva, elija el condominio que elija')}
+      ${rn('Datos: ninguno de la cuenta (sesión parcial)')}${rec ? rn('RN-112 · cada código de recuperación sirve una sola vez') : ''}
+      ${rn('Éxito según nextStep: P-005 · P-007 · returnUrl o P-010')}</div>`;
+    return h;
+  }
+
+  function errorView() {
+    return `<div class="page-state">${ICON.big}<h1 class="page">Algo salió mal</h1>
+      <p style="margin:0">Algo salió mal. Inténtalo de nuevo en unos minutos.</p>
+      <p class="muted">Si el problema continúa, comparte este código con la administración: <span class="trace">00-2d8e41b07a5c4f93b6e1c0a9d47f3e82-91c4a7e03b5d2f16-01</span></p>
+      <button class="btn btn-primary" type="button" data-retry>Volver a intentar</button>${rn('§3.0.4 · error inesperado 500 con traceId')}</div>`;
+  }
+
+  // Banda: estado oculto al usuario (bloqueo, códigos usados, rate limit)
+  function info() {
+    const el = document.getElementById('sim-info'); if (!el) return;
+    const t = now(), used = usedCodes();
+    const f = fails[ctx.roleKey] && fails[ctx.roleKey].until && t >= fails[ctx.roleKey].until ? null : fails[ctx.roleKey];
+    const free = RECOVERY.filter(x => !used.includes(x));
+    let lock = '';
+    if (f && (f.n || f.until > t)) lock = `<br>${CH.PERSONAS[ctx.roleKey].name}: ${Math.min(f.n, MAX_FAILS)}/${MAX_FAILS} intentos fallidos` +
+      (f.until > t ? ` · bloqueada hasta las ${clock(f.until - 1000)}, hora de este equipo (la pantalla no lo revela)` : '');
+    el.innerHTML = `Código TOTP válido ahora: <b>${TOTP}</b>. Códigos de recuperación sin usar: ${free.length ? free.map(x => `<b>${x}</b>`).join(', ') : 'ninguno'}` +
+      ` · ya usados: ${used.map(x => `<b>${esc(x)}</b>`).join(', ')}. Envíos en el último minuto: ${hits.filter(x => t - x < 60000).length}/${RATE}.` +
+      (partialExpired ? '<br>La sesión parcial está vencida: el próximo envío vuelve a P-001.' : '') + lock;
+  }
+
+  function attempt(btn, raw) {
+    const t = now();
+    if (partialExpired || ctx.state === 'expired') return CH.go('P-001', 'reason=expired');
+    const rec = method === 'recovery';
+    let v = raw.trim().replace(/\s+/g, '');
+    if (rec) { v = v.toUpperCase(); if (/^[A-Z0-9]{8}$/.test(v)) v = v.slice(0, 4) + '-' + v.slice(4); }
+    if (!(rec ? /^[A-Z0-9]{4}-[A-Z0-9]{4}$/ : /^\d{6}$/).test(v)) {
+      status = { kind: 'format', value: raw }; return ctx.rerender();
+    }
+    hits = hits.filter(x => t - x < 60000); hits.push(t);
+    if (hits.length > RATE) {
+      status = { kind: '429', secs: Math.max(1, Math.ceil((60000 - (t - hits[0])) / 1000)) };
+      info(); return ctx.rerender();
+    }
+    const acc = fails[ctx.roleKey] = fails[ctx.roleKey] || { n: 0, until: 0 };
+    if (acc.until && t >= acc.until) { acc.n = 0; acc.until = 0; }        // RN-111: el bloqueo termina a los 900 s
+    const locked = acc.until > t;
+    const used = usedCodes();
+    const ok = rec ? (RECOVERY.includes(v) && !used.includes(v)) : v === TOTP;
+    if (locked || !ok) {
+      if (!locked) { acc.n++; if (acc.n >= MAX_FAILS) acc.until = t + LOCK_MS; }
+      status = { kind: 'failed', locked };                                 // RN-153: mismo texto en todos los casos
+      info(); return ctx.rerender();
+    }
+    if (rec) setUsed(used.concat([v]));                                    // RN-112: el código deja de servir
+    acc.n = 0; status = null; info();
+    btn.removeAttribute('aria-disabled'); btn.textContent = 'Verificar';
+    const step = document.getElementById('next').value;
+    if (step === 'SignedIn') return CH.finishSignIn();                     // returnUrl válido o P-010
+    CH.go(NEXT[step]);                                                     // returnUrl viaja a P-005 / P-007
+  }
+
+  function setMethod(m) {
+    method = m; status = null; focusInput = true;
+    try { const q = new URLSearchParams(location.search); if (m === 'recovery') q.set('method', 'recovery'); else q.delete('method'); q.set('role', ctx.roleKey);
+      history.replaceState(null, '', location.pathname + '?' + q); } catch (e) { }
+    ctx.rerender();
+  }
+
+  const ctx = CH.init({
+    code: 'P-002', title: 'Verificar código MFA', shell: 'auth', roleLabel: 'Quién inicia sesión',
+    roles: ['marco', 'rosa'],
+    states: [['empty', 'Inicial (vacío)'], ['data', 'Con datos'], ['failed', 'SIGN_IN_FAILED'], ['format', 'Formato inválido'],
+             ['locked', 'Cuenta bloqueada'], ['429', 'Demasiados intentos (429)'], ['expired', 'Sesión parcial vencida'],
+             ['loading', 'Cargando'], ['error', 'Error']],
+    route: () => '/sign-in/mfa' + (method === 'recovery' ? '?method=recovery' : ''),
+    extraControls: `<div class="proto-x"><label for="next">Siguiente paso tras un código correcto (nextStep)</label>
+        <select id="next">
+          <option value="SignedIn">SignedIn → returnUrl o P-010 Inicio</option>
+          <option value="CondominiumSelectionRequired">CondominiumSelectionRequired → P-005 (más de un condominio)</option>
+          <option value="ConsentRequired">ConsentRequired → P-007</option>
+        </select></div>
+      <div class="proto-actions">
+        <button class="proto-btn" id="fill" type="button">Autocompletar código válido</button>
+        <button class="proto-btn" id="expire" type="button">Vencer la sesión parcial</button>
+        <button class="proto-btn" id="unlock" type="button">Avanzar 15 min (fin del bloqueo)</button>
+        <button class="proto-btn" id="reset" type="button">Reiniciar intentos y códigos</button>
+      </div>
+      <p class="proto-info" id="sim-info"></p>`,
+    render: view,
+    afterRender(c) {
+      if (focusInput && ['empty', 'data', 'expired'].includes(c.state) && !status) {
+        const el = document.getElementById(method === 'recovery' ? 'recovery-code' : 'code'); if (el) el.focus();
+      }
+      focusInput = false;
+      if (ready) info();
+    }
+  });
+  ready = true; info();
+
+  document.addEventListener('submit', e => {
+    const f = e.target.closest('#mfa'); if (!f) return;
+    e.preventDefault();
+    const btn = f.querySelector('button[type="submit"]');
+    if (btn.getAttribute('aria-disabled') === 'true') return;
+    const inp = f.querySelector('.code-input');
+    CH.sending(btn, 700, () => attempt(btn, inp.value));
+  });
+
+  document.addEventListener('click', e => {
+    const t = e.target;
+    const m = t.closest('[data-method]');
+    if (m) { e.preventDefault(); return setMethod(m.dataset.method); }
+    const fl = t.closest('[data-focus]');
+    if (fl) { e.preventDefault(); const el = document.getElementById(fl.dataset.focus); if (el) { el.focus(); el.select(); } return; }
+    if (t.closest('[data-retry]')) {
+      document.getElementById('ch-st-empty').checked = true; ctx.state = 'empty'; status = null; focusInput = true; ctx.rerender(true);
+    } else if (t.id === 'fill') {
+      const el = document.querySelector('#mfa .code-input');
+      if (el) { const free = RECOVERY.filter(x => !usedCodes().includes(x)); el.value = method === 'recovery' ? (free[0] || USED_SEED[0]) : TOTP; document.querySelector('#mfa button').focus(); }
+    } else if (t.id === 'expire') { partialExpired = true; info(); }
+    else if (t.id === 'unlock') { offset += LOCK_MS; info(); }
+    else if (t.id === 'reset') {
+      Object.keys(fails).forEach(k => delete fails[k]); hits = []; status = null; partialExpired = false; setUsed(USED_SEED.slice()); focusInput = true; ctx.rerender();
+    }
+  });
+
+  // Cambiar de persona o de estado limpia el resultado del último envío
+  document.addEventListener('change', e => { if (e.target.id === 'ch-role' || e.target.name === 'ch-st') { status = null; focusInput = true; } }, true);
+})();
+</script>
+</body>
+</html>

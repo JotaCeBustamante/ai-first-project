@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Áreas comunes · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:var(--space-3) var(--space-4)}
+table.dt td.act{text-align:right}
+table.dt tr:target td,table.dt tr.hl td{background:var(--color-success-subtle)}
+table.dt tr:focus{outline:3px solid var(--color-focus);outline-offset:-3px}
+.notes{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.proto-x{margin-top:var(--space-2)}
+.proto-row{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:flex-end;margin-top:var(--space-2)}
+.proto-row label{display:flex;flex-direction:column;gap:2px}
+.proto-row input,.proto-row select{font:inherit;min-height:36px}
+.proto-row input[type=number]{width:6rem}
+.proto-info{color:var(--proto-muted);margin:var(--space-2) 0 0;max-width:60rem}
+.proto-info b{color:var(--proto-fg)}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-060 · Áreas comunes (administración) — 09-ui-spec.md §3.8. Flujo F10 (paso 1 y regreso del paso 2). HU-004.
+// Reglas: RN-159 (solo Administrator; los demás → P-090, COMMON_AREA_CONFIG_FORBIDDEN 403), RN-162 (las reservas confirmadas no cambian).
+// Configuración de la sesión: sessionStorage 'ch:areas-v1' (CH.store 'areas-v1'), escrita por P-061.
+// P-011 y P-012 leen esta misma configuración de la sesión (CH.areaAlias / areas-v1), así que ven los cambios.
+(function () {
+  const { DATA, ICON, esc, rn, alert, store, fmtDate } = CH;
+
+  // ---------- Configuración de áreas (misma lógica en P-061) ----------
+  const AREAS_KEY = 'areas-v1';
+  const ART = { 'a-salon': 'el', 'a-parrilla': 'la' };
+  const seed = () => DATA.areas.map(a => ({
+    id: a.id, name: a.name, open: a.open, close: a.close, capacity: a.capacity, perUnitMonth: a.perUnitMonth,
+    maxDurationSeconds: parseInt(a.maxHours, 10) * 3600, maxAdvanceSeconds: a.advanceDays * 86400,
+    etag: 'W/"1"', updatedAt: null }));
+  const loadAreas = () => { try { const s = JSON.parse(store.get(AREAS_KEY)); if (s && Array.isArray(s.areas)) return s.areas; } catch (e) { } return seed(); };
+  const nameWithArt = a => (ART[a.id] ? ART[a.id] + ' ' : '') + a.name;
+  // Formatos de §3.8: duración "4 h", "4 h 30 min"; anticipación "30 días", "1 h"
+  function fmtSecs(s, withDays) {
+    const d = withDays ? Math.floor(s / 86400) : 0, h = Math.floor((s - d * 86400) / 3600), m = Math.floor((s % 3600) / 60), p = [];
+    if (d) p.push(d + (d === 1 ? ' día' : ' días'));
+    if (h) p.push(h + ' h');
+    if (m) p.push(m + ' min');
+    return p.join(' ') || '0 min';
+  }
+  const num = n => Number(n).toLocaleString('en-US');
+
+  // Reservas Confirmadas futuras (RN-162: no cambian al cambiar la configuración)
+  const confirmedOf = a => DATA.reservations.filter(r => r.area === a.name && r.status === 'Confirmed' && r.date >= CH.TODAY)
+    .sort((x, y) => (x.date + x.start).localeCompare(y.date + y.start));
+  const people = r => (r.unitPeople || 0) + (r.guests ? r.guests.length : (r.guestsCount || 0));
+  const mins = t => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+
+  const qp = CH.params();
+  let flashId = qp.get('saved');      // Post/Redirect/Get desde P-061: ?saved={id}#area-{id}
+  let firstRender = true;
+
+  function row(a, hl) {
+    return `<tr id="area-${esc(a.id)}"${hl ? ' class="hl" tabindex="-1"' : ''}>
+      <th scope="row" data-label="Área">${esc(a.name)}</th>
+      <td data-label="Horario" class="tnum">${a.open} – ${a.close}</td>
+      <td data-label="Máx." class="tnum">${fmtSecs(a.maxDurationSeconds)}</td>
+      <td data-label="Aforo" class="num">${num(a.capacity)}</td>
+      <td data-label="Anticip." class="tnum">${fmtSecs(a.maxAdvanceSeconds, true)}</td>
+      <td data-label="Por unidad/mes" class="num">${num(a.perUnitMonth)}</td>
+      <td data-label="Acción" class="act"><a href="#" class="btn btn-secondary btn-sm" data-go="P-061" data-params="id=${esc(a.id)}" aria-label="Editar ${esc(a.name)}">Editar</a></td></tr>`;
+  }
+
+  function renderData(c) {
+    const areas = c.state === 'empty' ? [] : loadAreas();
+    const fid = c.state === 'saved' ? 'a-parrilla' : flashId;
+    const flash = c.state !== 'empty' ? areas.find(a => a.id === fid) : null;
+    let h = `<div class="head"><h1 class="page">Áreas comunes</h1>
+      ${areas.length ? `<a href="#" class="btn btn-primary btn-sm" data-go="P-061">Nueva área</a>` : ''}</div>`;
+    if (flash) h += alert('success', `Guardaste ${esc(nameWithArt(flash))}. Los cambios aplican a las reservas nuevas.`,
+      rn('F10 paso 2 → P-060 (Post/Redirect/Get) · role="status" · la fila editada lleva id="area-' + esc(flash.id) + '" y la URL termina en #area-' + esc(flash.id)), 'status');
+    if (!areas.length) {
+      h += `<div class="empty">${ICON.cal}<p class="muted">Aún no hay áreas comunes. Crea la primera para que los residentes puedan reservar.</p></div>
+        <div><a href="#" class="btn btn-primary btn-block" data-go="P-061">Nueva área</a></div>`;
+      return `<div class="content">${h}</div>`;
+    }
+    h += `<div class="sec"><div class="table-wrap"><table class="dt"><caption class="sr-only">Áreas comunes y sus reglas de reserva</caption>
+      <thead><tr><th scope="col">Área</th><th scope="col">Horario</th><th scope="col">Máx.</th><th scope="col" class="num">Aforo</th><th scope="col">Anticip.</th><th scope="col" class="num">Por unidad/mes</th><th scope="col"><span class="sr-only">Acción</span></th></tr></thead>
+      <tbody>${areas.map(a => row(a, flash && a.id === flash.id)).join('')}</tbody></table></div>
+      <div class="notes">${rn('GET /api/common-areas · valores en segundos → "4 h", "4 h 30 min", "30 días", "1 h"')}${rn('RN-159 · solo Administrator')}
+        ${rn('RN-162 · los cambios no tocan las reservas Confirmed existentes')}${rn('Sesión: sessionStorage ch:areas-v1 (P-011 y P-012 la leen)')}</div></div>`;
+    return `<div class="content">${h}</div>`;
+  }
+
+  // ---------- Banda: comprobación de RN-162 (reservas existentes y reserva nueva) ----------
+  function impact() {
+    const el = document.getElementById('sim-impact'); if (!el) return;
+    const areas = loadAreas();
+    el.innerHTML = 'Reservas <b>Confirmadas</b> existentes (RN-162: siguen igual aunque no cumplan la regla nueva): ' + areas.map(a => {
+      const l = confirmedOf(a).map(r => {
+        const out = [];
+        if (people(r) > a.capacity) out.push(`supera el aforo nuevo (${a.capacity})`);
+        if (r.end > a.close || r.start < a.open) out.push(`fuera del horario nuevo (${a.open} – ${a.close})`);
+        if (mins(r.end) - mins(r.start) > a.maxDurationSeconds / 60) out.push('supera la duración nueva');
+        return `${r.id} ${r.unit} ${fmtDate(r.date)} ${r.start}–${r.end}, ${people(r)} personas${out.length ? ' · <b>' + out.join(', ') + ' → sigue Confirmada</b>' : ''}`;
+      });
+      return `<br><b>${esc(a.name)}</b>: ${l.length ? l.join(' · ') : 'ninguna'}`;
+    }).join('');
+  }
+
+  // Simula POST /api/reservations con la configuración vigente (solo reglas del área: RN-021, RN-022, RN-023, RN-079, RN-119)
+  function tryNew() {
+    const out = document.getElementById('try-out'); if (!out) return;
+    const a = loadAreas().find(x => x.id === document.getElementById('try-area').value);
+    const date = document.getElementById('try-date').value, s = document.getElementById('try-start').value, e = document.getElementById('try-end').value;
+    const n = parseInt(document.getElementById('try-people').value, 10) || 0;
+    const errs = [];
+    if (!(e > s)) errs.push(['RESERVATION_INVALID_TIME_SLOT', 'La hora de fin debe ser posterior a la de inicio.']);
+    else {
+      if (s < a.open || e > a.close) errs.push(['RESERVATION_OUTSIDE_OPENING_HOURS', `La franja está fuera del horario del área (${a.open} a ${a.close}).`]);
+      if ((mins(e) - mins(s)) * 60 > a.maxDurationSeconds) errs.push(['RESERVATION_EXCEEDS_MAX_DURATION', `La reserva supera la duración máxima del área (${fmtSecs(a.maxDurationSeconds)}).`]);
+    }
+    const startTs = Date.parse(date + 'T' + s + ':00-05:00'), nowTs = Date.parse(CH.TODAY + 'T' + CH.NOW + ':00-05:00');
+    if (startTs - nowTs > a.maxAdvanceSeconds * 1000) { const lim = new Date(nowTs + a.maxAdvanceSeconds * 1000 - 5 * 3600000).toISOString(); errs.push(['RESERVATION_TOO_FAR_AHEAD', 'Solo puedes reservar hasta el ' + fmtDate(lim.slice(0, 10)) + ' a las ' + lim.slice(11, 16) + '.']); }
+    if (n > a.capacity) errs.push(['RESERVATION_EXCEEDS_CAPACITY', `Son ${n} personas y el aforo es ${a.capacity}. Quita ${n - a.capacity}.`]);
+    out.innerHTML = errs.length ? errs.map(([k, m]) => `<b>422 ${k}</b>: ${esc(m)}`).join('<br>') : '<b>201</b>: la reserva cumple las reglas del área y se confirmaría.';
+  }
+
+  CH.init({
+    code: 'P-060', title: 'Áreas comunes (administración)',
+    roles: ['rosa', 'rosaRes', 'marco', 'ana', 'carla', 'luis', 'raul'],
+    states: [['data', 'Con datos'], ['saved', 'Después de guardar'], ['empty', 'Sin áreas'], ['loading', 'Cargando'], ['error', 'Error']],
+    route: c => '/admin/common-areas' + ((c.state === 'saved' || flashId) && c.state !== 'empty' ? '#area-' + (c.state === 'saved' ? 'a-parrilla' : flashId) : ''),
+    extraControls: `<p class="proto-info" id="sim-impact"></p>
+      <div class="proto-row" role="group" aria-label="Probar una reserva nueva con la configuración guardada">
+        <label for="try-area">Reserva nueva · área<select id="try-area">${loadAreas().map(a => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')}</select></label>
+        <label for="try-date">Fecha<input id="try-date" type="date" value="2026-12-19"></label>
+        <label for="try-start">Desde<input id="try-start" type="time" step="60" value="21:00"></label>
+        <label for="try-end">Hasta<input id="try-end" type="time" step="60" value="23:00"></label>
+        <label for="try-people">Personas<input id="try-people" type="number" min="1" value="31"></label>
+        <button class="proto-btn" id="try-btn" type="button">Comprobar (HU-004 C8, C13)</button></div>
+      <p class="proto-info" id="try-out" aria-live="polite"></p>`,
+    render(c) {
+      // RN-159: BoardMember, residentes y Concierge → P-090 (COMMON_AREA_CONFIG_FORBIDDEN, 403). El ítem no aparece en su menú.
+      if (!c.persona.admin) { c.title = 'No tienes acceso a esta página'; return CH.deniedView().replace('P-090 · 403', 'P-090 · 403 · COMMON_AREA_CONFIG_FORBIDDEN · RN-159'); }
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      c.title = 'Áreas comunes';
+      return renderData(c);
+    },
+    afterRender(c) {
+      impact();
+      const hl = document.querySelector('tr.hl');
+      if (hl && firstRender) { try { history.replaceState(null, '', location.pathname + location.search + '#area-' + hl.id.slice(5)); } catch (e) { } hl.focus(); }
+      firstRender = false;
+    }
+  });
+
+  document.addEventListener('click', e => {
+    if (e.target.id === 'try-btn') tryNew();
+    if (e.target.closest('[data-ch-reset]')) store.set(AREAS_KEY, '');       // "Reiniciar datos" también vuelve a la configuración inicial
+  }, true);
+  document.addEventListener('change', e => { if (e.target.name === 'ch-st' || e.target.id === 'ch-role') flashId = null; }, true);
+})();
+</script>
+</body>
+</html>

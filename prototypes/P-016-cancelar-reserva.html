@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>¿Cancelar esta reserva? · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+/* ConfirmPage: AppShell con contenido de máx. 32 rem (09-ui-spec.md P-016) */
+.content.confirm{max-width:32rem;gap:var(--space-6)}
+.sum{display:flex;flex-direction:column;gap:var(--space-2)}
+.sum p{margin:0}
+.sum-title{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--space-2)}
+.sum-title strong{font-size:1.125rem}
+.consequence{margin:0}
+.confirm-actions{display:flex;flex-direction:column;gap:var(--space-3)}
+.confirm-actions form{margin:0}
+.reloaded{outline:3px solid var(--color-warning);outline-offset:2px}
+.when-now{margin:0}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-016 · Cancelar reserva — 09-ui-spec.md §3.3 (ConfirmPage) y flujo F4.
+// Reglas: RN-083 / RN-161 (cancelar solo antes del inicio, anfitrión y Administrator), RN-084 (pasa a Cancelled
+// y guarda quién y cuándo), RN-168 (ya cancelada: se rechaza y se conservan cancelledBy/cancelledAt),
+// RN-088 (aviso al anfitrión si cancela la administración), RN-026 (sale de portería en ≤ 60 s).
+(function () {
+  const { DATA, ICON, esc, fmtDate, rn, alert } = CH;
+  const DAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+  const CANCELLED_AT = '2026-11-04 10:45';
+  const DEFAULT_ID = { ana: 'r-8841', carla: 'r-8933', luis: 'r-8955', rosa: 'r-8841', rosaRes: 'r-8841' };
+  const OTHER_UNIT_ID = { ana: 'r-8933', carla: 'r-8841', luis: 'r-8841', rosa: 'r-8841' };  // estado 403
+  // Mismas reservas locales que P-015 (enlaces desde P-013 / P-062)
+  const LOCAL = {
+    'r-9010': { id: 'r-9010', area: 'Salón de fiestas', unit: 'A-502', host: 'Ana Quispe', date: '2026-12-12', start: '19:00', end: '23:00', status: 'Confirmed', unitPeople: 2, guestsCount: 38 },
+    'r-9011': { id: 'r-9011', area: 'Parrilla', unit: 'A-1104', host: 'Rosa Huamán', date: '2026-12-19', start: '12:00', end: '16:00', status: 'Confirmed', unitPeople: 3, guestsCount: 6 }
+  };
+  const MSG = {
+    TOO_LATE: 'La reserva ya empezó y no se puede cancelar.',
+    ALREADY: 'Esta reserva ya estaba cancelada.',
+    CONFLICT: 'Otra persona cambió estos datos. Revisa la versión actual.'
+  };
+
+  const weekday = d => { const [y, m, dd] = d.split('-').map(Number); return DAYS[new Date(y, m - 1, dd).getDay()]; };
+  const addMin = (t, n) => { const [h, m] = t.split(':').map(Number); const x = h * 60 + m + n; return `${String(Math.floor(x / 60)).padStart(2, '0')}:${String(x % 60).padStart(2, '0')}`; };
+  const guestsOf = r => r.guests ? r.guests.length : (r.guestsCount || 0);
+
+  // Reserva: CH.DATA (con cambios de la sesión) → creada en P-013 → locales. Si no existe: null (404)
+  function find(id) {
+    const known = CH.reservation(id);
+    if (known) return Object.assign({}, known);
+    const saved = CH.store.get('res:' + id);
+    if (saved) { try { return JSON.parse(saved); } catch (e) { } }
+    return LOCAL[id] ? Object.assign({}, LOCAL[id]) : null;
+  }
+
+  const idOf = c => c.params.get('id') || DEFAULT_ID[c.roleKey];
+  const isAdminView = (p, r) => !!p.admin && !p.units.includes(r.unit);
+
+  function setup(c) {
+    const d = c.data;
+    if (d.loaded) return d;
+    d.loaded = true;
+    d.id = c.state === 'forbidden' ? OTHER_UNIT_ID[c.roleKey] : idOf(c);
+    d.r = c.state === 'notfound' ? null : find(d.id);
+    d.result = null;          // 'too-late' | 'already' | 'conflict' tras el envío
+    d.conflictDone = false;   // el 409 se simula una sola vez; el reintento sale bien
+    if (!d.r) return d;
+    if (d.r.unitPeople == null) d.r.unitPeople = 2;     // dato no registrado en reservas canceladas de CH.DATA
+    if (c.state === 'empty') { d.r.guests = []; d.r.guestsCount = 0; }
+    if (c.state === 'cancelled' && d.r.status !== 'Cancelled')
+      Object.assign(d.r, { status: 'Cancelled', cancelledBy: isAdminView(c.persona, d.r) ? 'host' : 'admin', cancelledAt: '2026-11-04 09:20' });
+    return d;
+  }
+
+  // Momento de la reserva respecto de "ahora" (estado simulado o hora común CH.NOW, hoy 04/11/2026)
+  function phase(c, r) {
+    if (r.status === 'Cancelled') return 'cancelled';
+    if (r.status === 'Completed' || CH.hasEnded(r)) return 'past';
+    if (c.state === 'started' || CH.hasStarted(r)) return 'started';      // RN-083, RN-161: desde el inicio no se cancela
+    return 'before';
+  }
+
+  // ---------- Piezas ----------
+  function crumbs(c, r) {
+    const back = isAdminView(c.persona, r) ? ['P-062', 'Reservas del condominio'] : ['P-014', 'Mis reservas'];
+    const det = `${esc(r.area)} · ${fmtDate(r.date)}`;
+    return `<div><nav class="crumbs" aria-label="Migas"><ol>
+        <li><a href="#" data-go="${back[0]}">${back[1]}</a></li>
+        <li><a href="#" data-go="P-015" data-params="id=${esc(r.id)}">${det}</a></li>
+        <li aria-current="page">Cancelar</li></ol></nav>
+      <a href="#" class="back" data-go="P-015" data-params="id=${esc(r.id)}">← ${det}</a></div>`;
+  }
+
+  function summaryCard(c, r, opts) {
+    const admin = isAdminView(c.persona, r);
+    const g = guestsOf(r), total = r.unitPeople + g;
+    const status = opts.status || null;
+    return `<section class="card sum${opts.reloaded ? ' reloaded' : ''}" aria-label="Reserva">
+      <p class="sum-title"><strong>${esc(r.area)} · ${esc(r.unit)}</strong>${status ? CH.resBadge(status) : ''}</p>
+      <p><time datetime="${r.date}T${r.start}:00-05:00" class="tnum">${weekday(r.date)} ${fmtDate(r.date)} · ${r.start} – ${r.end}</time></p>
+      <p class="tnum">${total} ${total === 1 ? 'persona' : 'personas'} <span class="muted">(${r.unitPeople} de ${admin ? 'la' : 'tu'} unidad${g ? ` y ${g} ${g === 1 ? 'invitado' : 'invitados'}` : ', sin invitados'})</span></p>
+      ${admin ? `<p class="muted">Anfitrión: ${esc(r.host)}</p>` : ''}
+    </section>`;
+  }
+
+  function errorSummary(code, text) {
+    return `<div class="alert alert-danger" role="alert" tabindex="-1">${ICON.err}<div class="alert-body">
+      <p class="alert-title">No se pudo cancelar la reserva</p><p>${text}</p>${rn(code)}</div></div>`;
+  }
+
+  function backActions(c, r) {
+    const admin = isAdminView(c.persona, r);
+    return `<div class="confirm-actions">
+      <a href="#" class="btn btn-primary btn-block" data-go="P-015" data-params="id=${esc(r.id)}">Ver el detalle de la reserva</a>
+      <a href="#" class="btn btn-secondary btn-block" data-go="${admin ? 'P-062' : 'P-014'}">${admin ? 'Ir a Reservas del condominio' : 'Ir a Mis reservas'}</a></div>`;
+  }
+
+  // ---------- Vistas ----------
+  function confirmView(c, d) {
+    const r = d.r, admin = isAdminView(c.persona, r), g = guestsOf(r);
+    c.title = '¿Cancelar esta reserva?';
+    let h = crumbs(c, r) + `<h1 class="page">¿Cancelar esta reserva?</h1>`;
+    if (d.result === 'conflict')
+      h += alert('warning', MSG.CONFLICT, `<p>Recargamos los datos de la reserva: ahora tiene ${g} invitados. Si igual quieres cancelarla, vuelve a confirmar.</p>`, 'alert') +
+        rn('§3.0.4 · conflicto 409/412 · datos recargados · ⚠️ supuesto: el spec no define 409 para la cancelación');
+    h += summaryCard(c, r, { reloaded: d.result === 'conflict' });
+
+    const whose = admin ? 'Sus' : 'Tus';
+    h += `<p class="consequence">${g
+      ? `${whose} invitados ya no figurarán en portería. Esta acción no se puede deshacer.`
+      : `${admin ? 'La reserva no tiene' : 'No tienes'} invitados registrados. Esta acción no se puede deshacer.`}</p>
+      ${rn('RN-026 · al cancelar sale de la vista de portería en ≤ 60 s')}`;
+    if (admin)
+      h += alert('info', 'Aviso al anfitrión', `<p>Avisaremos a la unidad ${esc(r.unit)} cuando inicie sesión.</p>`) +
+        rn('RN-088 · aviso en P-010 en su próximo inicio de sesión (solo si cancela la administración)');
+
+    h += `<div class="confirm-actions">
+        <form method="post" action="/api/reservations/${esc(r.id)}/cancellation" id="cancel-form" novalidate>
+          <button class="btn btn-danger btn-block" type="submit" id="cancel-btn">Sí, cancelar</button>
+        </form>
+        <a href="#" class="btn btn-secondary btn-block" data-go="P-015" data-params="id=${esc(r.id)}">No, volver</a>
+      </div>
+      ${rn(admin ? 'RN-161 · el Administrator cancela solo antes del inicio (' + r.start + ' del ' + fmtDate(r.date) + ')' : 'RN-083 · el anfitrión cancela solo antes del inicio (' + r.start + ' del ' + fmtDate(r.date) + ')')}
+      ${rn('RN-084 · POST …/cancellation → status Cancelled + cancelledBy + cancelledAt (ISO 8601) · ConfirmPage sin confirm() ni modal')}`;
+    return `<div class="content confirm">${h}</div>`;
+  }
+
+  // Reserva ya empezada o ya pasada: RESERVATION_CANCELLATION_TOO_LATE
+  function tooLateView(c, d, ph) {
+    const r = d.r, admin = isAdminView(c.persona, r);
+    c.title = 'No se puede cancelar esta reserva';
+    const status = ph === 'past' ? 'Completed' : 'Confirmed';
+    const now = ph === 'started'
+      ? (t => `<p class="muted when-now tnum">Son las <time datetime="${r.date}T${t}:00-05:00">${t}</time> del ${fmtDate(r.date)}: la reserva empezó a las ${r.start}.</p>`)(CH.hasStarted(r) ? CH.NOW : addMin(r.start, 10))
+      : d.result === 'too-late' ? `<p class="muted when-now">La franja empezó mientras confirmabas.</p>` : '';
+    return `<div class="content confirm">${crumbs(c, r)}
+      <h1 class="page">No se puede cancelar esta reserva</h1>
+      ${errorSummary('RESERVATION_CANCELLATION_TOO_LATE · 422 · ' + (admin ? 'RN-161' : 'RN-083'), MSG.TOO_LATE)}
+      ${summaryCard(c, r, { status })}
+      ${now}
+      ${status === 'Completed' ? rn('RN-085 · Realizada se calcula al consultar') : rn('Franja semiabierta [inicio, fin): desde las ' + r.start + ' ya empezó')}
+      ${backActions(c, r)}</div>`;
+  }
+
+  // Ya cancelada (idempotente): RESERVATION_ALREADY_CANCELLED, se conservan quién y cuándo
+  function alreadyView(c, d) {
+    const r = d.r, admin = isAdminView(c.persona, r);
+    c.title = 'No se puede cancelar esta reserva';
+    const by = r.cancelledBy === 'admin' ? 'la administración' : admin ? 'el anfitrión' : 'ti';
+    const at = r.cancelledAt || CANCELLED_AT;
+    const [ad, at2] = at.split(' ');
+    return `<div class="content confirm">${crumbs(c, r)}
+      <h1 class="page">No se puede cancelar esta reserva</h1>
+      ${errorSummary('RESERVATION_ALREADY_CANCELLED · 422 · RN-168', MSG.ALREADY)}
+      ${summaryCard(c, r, { status: 'Cancelled' })}
+      <section class="card" aria-labelledby="h-cancel"><h2 id="h-cancel">Cancelación</h2>
+        <dl class="dl"><dt>Cancelada por</dt><dd>${by}</dd>
+        <dt>Fecha</dt><dd><time datetime="${ad}T${at2}:00-05:00" class="tnum">${fmtDate(ad)} ${at2}</time></dd></dl></section>
+      ${rn('RN-168 · el segundo intento no cambia cancelledBy ni cancelledAt (así RN-088 sigue avisando si fue la administración)')}
+      ${backActions(c, r)}</div>`;
+  }
+
+  function notFoundView(c) {
+    c.title = 'No encontrado';
+    return `<div class="content read"><div class="page-state"><span style="color:var(--color-text-muted)">${ICON.big}</span>
+      <h1 class="page" tabindex="-1" id="nf-h1">No encontramos lo que buscas</h1>
+      <p class="muted">Puede que el enlace esté mal escrito o que ya no exista.</p>
+      <div class="actions"><a href="#" class="btn btn-primary btn-block" data-go="home">Ir al inicio</a>
+      <a href="#" class="btn btn-secondary btn-block" data-go="${c.persona.admin ? 'P-062' : 'P-014'}">Volver</a></div>
+      ${rn('P-091 · 404 · RN-103: igual si no existe o es de otro condominio')}</div></div>`;
+  }
+
+  const ctx = CH.init({
+    code: 'P-016', title: 'Cancelar reserva',
+    active: c => c.persona.admin ? 'P-062' : 'P-014',
+    roles: ['ana', 'carla', 'luis', 'rosa', 'rosaRes'],
+    states: [['data', 'Con datos'], ['empty', 'Vacío (sin invitados)'], ['started', 'Ya empezó'], ['cancelled', 'Ya cancelada'],
+             ['forbidden', 'No es tuya (403)'], ['notfound', 'No existe (404)'], ['loading', 'Cargando'], ['error', 'Error']],
+    extraControls: `<div><label for="outcome">Al pulsar "Sí, cancelar", el servidor responde</label>
+      <select id="outcome">
+        <option value="ok">200 · cancelada</option>
+        <option value="too-late">422 · ya empezó (RESERVATION_CANCELLATION_TOO_LATE)</option>
+        <option value="already">422 · otra persona la canceló antes (RESERVATION_ALREADY_CANCELLED)</option>
+        <option value="conflict">409 · otra persona cambió la reserva</option>
+        <option value="error">500 · error inesperado</option>
+      </select></div>`,
+    route: c => `/reservations/${c.state === 'forbidden' ? OTHER_UNIT_ID[c.roleKey] : idOf(c)}/cancel`,
+    render(c) {
+      if (c.state === 'loading') return CH.loadingView('SSR: el servidor entrega la ConfirmPage completa. Al pulsar "Sí, cancelar" el botón pasa a "Enviando…" (🧩 JS opcional).');
+      if (c.state === 'error' || c.data.fatal) { c.title = 'Algo salió mal'; return CH.errorView(); }
+      const d = setup(c);
+      if (!d.r) return notFoundView(c);
+      const p = c.persona;
+      if (!p.admin && !p.units.includes(d.r.unit)) { c.title = 'Acceso denegado'; return CH.deniedView(); }
+      if (c.state === 'forbidden') { c.title = 'Acceso denegado'; return CH.deniedView(); }
+      const ph = phase(c, d.r);
+      if (ph === 'cancelled') return alreadyView(c, d);
+      if (ph === 'started' || ph === 'past' || d.result === 'too-late') return tooLateView(c, d, ph);
+      return confirmView(c, d);
+    },
+    afterRender() { const h = document.getElementById('nf-h1'); if (h) h.focus(); }
+  });
+
+  // ---------- Interacciones (delegación en document) ----------
+  function submitCancel(form) {
+    const d = ctx.data, r = d.r, p = ctx.persona;
+    const btn = form.querySelector('#cancel-btn');
+    const sel = document.getElementById('outcome');
+    let outcome = sel ? sel.value : 'ok';
+    if (outcome === 'conflict' && d.conflictDone) outcome = 'ok';
+    CH.sending(btn, 800, () => {
+      if (outcome === 'error') { d.fatal = true; ctx.rerender(); return; }
+      if (outcome === 'too-late') { d.result = 'too-late'; ctx.rerender(); return; }
+      if (outcome === 'already') {
+        // Carrera: la otra persona canceló a las 10:44. Se guarda su cancelación (RN-168) para que P-015/P-010 la vean.
+        const by = isAdminView(p, r) ? 'host' : 'admin';
+        const patch = { status: 'Cancelled', cancelledBy: by, cancelledAt: '2026-11-04 10:44' };
+        CH.patchReservation(r.id, patch); Object.assign(r, patch);
+        d.result = 'already'; ctx.rerender(); return;
+      }
+      if (outcome === 'conflict') {
+        // 409: datos recargados (el anfitrión agregó 2 invitados mientras tanto)
+        d.conflictDone = true; d.result = 'conflict';
+        if (r.guests) r.guests = r.guests.concat(['Teresa Gamarra', 'Julio Bendezú']); else r.guestsCount = (r.guestsCount || 0) + 2;
+        ctx.rerender(); return;
+      }
+      CH.patchReservation(r.id, { status: 'Cancelled', cancelledBy: p.admin ? 'admin' : 'host', cancelledAt: CANCELLED_AT });
+      if (p.admin) CH.go('P-062', 'cancelled=' + r.id + '&date=' + r.date);
+      else CH.go('P-014', 'cancelled=' + r.id);
+    });
+  }
+
+  document.addEventListener('submit', e => {
+    if (e.target.id === 'cancel-form') { e.preventDefault(); submitCancel(e.target); }
+  });
+})();
+</script>
+</body>
+</html>

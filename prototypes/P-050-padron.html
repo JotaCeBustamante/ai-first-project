@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Padrón · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.pd-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;gap:var(--space-4)}
+.pd-head .actions .btn{flex:none}
+.search{display:flex;flex-direction:column;gap:var(--space-4)}
+.search-row{display:flex;flex-wrap:wrap;gap:0 var(--space-3);align-items:flex-end}
+.search-row .input{flex:1 1 16rem;width:auto}
+.search-row .btn{flex:0 0 auto}
+.result{display:flex;flex-wrap:wrap;gap:var(--space-2) var(--space-4);align-items:center;justify-content:space-between;border-top:1px solid var(--color-border-subtle);padding-top:var(--space-4)}
+.result p{margin:0}
+.result .who{font-weight:700;font-size:1.125rem}
+.add-tower summary{display:inline-flex;align-items:center;min-height:44px;padding:0 var(--space-4);font-weight:600;color:var(--color-primary);cursor:pointer;border:1px dashed var(--color-primary);border-radius:var(--radius-md)}
+.add-tower[open] summary{margin-bottom:var(--space-3)}
+.add-tower form{display:flex;flex-wrap:wrap;gap:0 var(--space-3);align-items:flex-end}
+.add-tower .field{flex:1 1 10rem;max-width:14rem}
+.add-tower .btn{flex:none}
+.tower-bar{display:flex;flex-wrap:wrap;gap:var(--space-3);align-items:flex-start}
+.tower-bar .tabs{flex:1 1 auto;border-bottom:0}
+.units{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(2,1fr);gap:var(--space-3)}
+@container shell (min-width:37.5em){.units{grid-template-columns:repeat(4,1fr)}}
+@container shell (min-width:60em){.units{grid-template-columns:repeat(6,1fr)}}
+.unit-card{padding:var(--space-4)!important;display:flex;flex-direction:column;gap:var(--space-1);min-height:6rem}
+.unit-card h3{font-size:1.25rem;font-weight:700;margin:0}
+.unit-card h3 a{text-decoration:none;color:var(--color-text)}
+.unit-card h3 a:hover{text-decoration:underline}
+.unit-card .muted{font-size:1rem}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script src="assets/registry-data.js"></script>
+<script>
+// P-050 · Padrón: torres y unidades — 09-ui-spec.md §3.7. Flujo F9 (pasos 1 y 6), entrada del F1 del Administrator.
+// HU-001. Reglas: RN-003, RN-004, RN-058, ADR-0004 (sin búsqueda parcial por nombre: datos cifrados), RN-103,
+// RN-170 (TOWER_CODE_DUPLICATE), RN-172 (FIELD_REQUIRED). Textos de §3.0.6.
+(function () {
+  const { ICON, rn, alert, esc, fieldError } = CH;
+  const P = CH.params();
+  let tower = P.get('tower') || '';
+  let email = P.get('email') || '';
+  let towerMsg = null;            // { ok } | { err, code, value }
+  // Textos de 09-ui-spec.md §3.0.6 (copiados textualmente)
+  const MSG = {
+    FIELD_REQUIRED: 'Completa el código de la torre.',
+    TOWER_CODE_DUPLICATE: 'Este condominio ya tiene una torre con ese código.'
+  };
+  // Valida el código de torre (RN-170: sin distinguir mayúsculas ni espacios al inicio y al final)
+  function towerError(raw, existing) {
+    const code = raw.trim().toUpperCase();
+    if (!code) return { err: MSG.FIELD_REQUIRED, code: 'FIELD_REQUIRED', value: raw };
+    if (!/^[A-Z0-9]{1,3}$/.test(code)) return { err: 'Usa hasta 3 letras o números, sin espacios.', code: 'sin código en §3.0.6', value: raw };
+    if (existing.includes(code)) return { err: MSG.TOWER_CODE_DUPLICATE, code: 'TOWER_CODE_DUPLICATE', value: raw };
+    return null;
+  }
+
+  const STATES = [['data', 'Con datos'], ['empty', 'Vacío (sin torres)'], ['towerEmpty', 'Torre sin unidades'],
+    ['found', 'Búsqueda con resultado'], ['nobody', 'Búsqueda sin resultado'],
+    ['towerRequired', 'Torre sin código (FIELD_REQUIRED)'], ['towerDuplicate', 'Torre repetida " b " (TOWER_CODE_DUPLICATE)'],
+    ['loading', 'Cargando'], ['error', 'Error']];
+
+  function pickTower(c) {
+    const ts = REG.towers();
+    if (c.state === 'towerEmpty') return 'D';
+    return ts.includes(tower) ? tower : ts[0] || '';
+  }
+  function searchEmail(c) {
+    if (c.state === 'found') return 'Ana.Quispe@Example.pe';
+    if (c.state === 'nobody') return 'nadie@example.pe';
+    return email;
+  }
+
+  function searchBlock(c) {
+    const q = searchEmail(c);
+    let err = '', res = '';
+    if (q) {
+      const bad = !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(q.trim());
+      if (bad) err = 'Escribe el correo completo. Ejemplo: ana.quispe@example.pe';
+      else {
+        const p = REG.findByEmail(q);
+        res = p
+          ? `<div class="result" role="status"><div><p class="who">${esc(p.name)}</p><p class="muted">${esc(p.email)}</p></div>
+              <a href="#" class="btn btn-secondary btn-sm" data-go="P-054" data-params="id=${p.id}" aria-label="Ver la ficha de ${esc(p.name)}">Ver ficha</a></div>
+              ${rn('Coincidencia por índice ciego del correo normalizado (ADR-0004, RN-068): mayúsculas y espacios no cuentan')}`
+          : `<div class="result" role="status"><p>No hay ninguna persona con ese correo.</p></div>${rn('GET /api/persons?email= · 0 resultados')}`;
+      }
+    }
+    const desc = err ? ' aria-describedby="s-hint s-err" aria-invalid="true"' : ' aria-describedby="s-hint"';
+    return `<form class="card search" method="get" action="/registry" id="f-search" novalidate role="search" aria-labelledby="h-search">
+      <h2 id="h-search">Buscar persona</h2>
+      <div class="field"><label for="s-email">Correo exacto</label>
+        <p class="hint" id="s-hint">Escribe el correo completo. No se busca por nombre.</p>
+        <div class="search-row"><input class="input" type="email" id="s-email" name="email" autocomplete="off" spellcheck="false" value="${esc(q)}"${desc}>
+        <button class="btn btn-secondary" type="submit">Buscar</button></div>
+        ${err ? `<div id="s-err">${fieldError(esc(err))}</div>` : ''}</div>
+      ${rn('ADR-0004 · nombres y correos cifrados: solo búsqueda exacta por correo (índice ciego), sin búsqueda parcial')}
+      ${res}</form>`;
+  }
+
+  function addTowerForm(open) {
+    const e = towerMsg && towerMsg.err;
+    return `<details class="add-tower"${open || e ? ' open' : ''}><summary>+ Agregar torre</summary>
+      <form method="post" action="/api/towers" id="f-tower" novalidate>
+        <div class="field"><label for="t-code">Código <span class="req">(obligatorio)</span></label>
+          <p class="hint" id="t-hint">Hasta 3 letras o números. Ejemplo: D</p>
+          <input class="input" id="t-code" name="code" maxlength="3" autocomplete="off" value="${e ? esc(towerMsg.value) : ''}" aria-describedby="t-hint${e ? ' t-err' : ''}"${e ? ' aria-invalid="true"' : ''}>
+          ${e ? `<div id="t-err">${fieldError(esc(towerMsg.err))}</div>` : ''}</div>
+        <button class="btn btn-secondary" type="submit" id="btn-tower">Agregar torre</button>
+      </form>${rn('POST /api/towers · RN-004 CondominiumId del Administrator · RN-172 vacío → FIELD_REQUIRED · RN-170 código repetido, sin distinguir mayúsculas ni espacios de los extremos → TOWER_CODE_DUPLICATE' + (e ? ' · 422 · ' + towerMsg.code : ''))}</details>`;
+  }
+
+  function renderData(c) {
+    const ts = c.state === 'empty' ? [] : REG.towers().concat(c.state === 'towerEmpty' ? ['D'] : []);
+    const t = c.state === 'empty' ? '' : pickTower(c);
+    let h = `<div class="pd-head"><div><h1 class="page">Padrón</h1><p class="lead">Torres, unidades y personas de ${esc(CH.DATA.condo)}.</p></div>
+      <div class="actions"><a href="#" class="btn btn-secondary" data-go="P-051"${t && c.state !== 'towerEmpty' ? ` data-params="tower=${t}"` : ''}>Registrar unidad</a>
+      <a href="#" class="btn btn-primary" data-go="P-053">Registrar persona</a></div></div>`;
+    h += REG.asOfNote();
+    if (towerMsg && towerMsg.ok) h += alert('success', `Agregaste la torre ${esc(towerMsg.ok)}.`, '', 'status');
+
+    h += searchBlock(c);
+
+    h += `<section class="sec" aria-labelledby="h-towers"><h2 id="h-towers">Torres</h2>`;
+    if (!ts.length) {
+      h += `<div class="empty">${ICON.doc}<p class="muted">Agrega la primera torre del condominio.</p></div>${addTowerForm(true)}
+        ${rn(c.state === 'empty' && REG.base() === 'seed' ? 'Vista de padrón vacío. Si agregas una torre aquí, el padrón de la sesión empieza vacío (F9 desde cero); "Reiniciar datos" vuelve al padrón de ejemplo.' : 'Padrón de la sesión vacío (F9 desde cero)')}</section>`;
+      return `<div class="content">${h}</div>`;
+    }
+    const tabs = ts.map(x => `<a href="?tower=${x}" data-tower="${x}"${x === t ? ' aria-current="page"' : ''}>Torre ${x}</a>`).join('');
+    h += `<div class="tower-bar"><nav class="tabs" aria-label="Torres">${tabs}</nav>${addTowerForm(false)}</div>`;
+
+    const us = c.state === 'towerEmpty' && t === 'D' ? [] : REG.unitsOf(t);
+    h += `<h2 id="h-tower" tabindex="-1">Torre ${esc(t)} · ${us.length} ${us.length === 1 ? 'unidad' : 'unidades'}</h2>`;
+    if (!us.length) {
+      h += `<div class="empty">${ICON.doc}<p class="muted">Esta torre aún no tiene unidades.</p>
+        <a href="#" class="btn btn-primary" data-go="P-051" data-params="tower=${t}">Registrar unidad</a></div>
+        ${c.state === 'towerEmpty' ? rn('Vista de ejemplo: la Torre D no se guarda. Para probarlo de verdad, agrega una torre.') : ''}`;
+    } else {
+      h += `<ul class="units">${us.map(u => {
+        const n = REG.activeCount(u.id);
+        return `<li class="card unit-card"><h3><a href="#" data-go="P-052" data-params="id=${u.id}" aria-label="Unidad ${u.code}, ${n ? n + (n === 1 ? ' vínculo activo' : ' vínculos activos') : 'sin vínculos'}" class="tnum">${u.number}</a></h3>
+          ${n ? `<span class="muted tnum">${n} ${n === 1 ? 'vínculo' : 'vínculos'}</span>` : CH.badge('neutral', 'Sin vínculos')}</li>`;
+      }).join('')}</ul>${rn('GET /api/towers/{id}/units · cantidad de vínculos activos a la fecha (StartDate ≤ hoy ≤ EndDate) · RN-003 único por torre · RN-058 3 o 4 dígitos')}`;
+    }
+    h += `</section>`;
+    return `<div class="content">${h}</div>`;
+  }
+
+  const ctx = CH.init({
+    code: 'P-050', title: 'Padrón', active: 'P-050',
+    roles: ['rosa', 'rosaRes', 'marco', 'ana', 'raul'],
+    states: STATES,
+    extraControls: REG.asOfControl(),
+    route(c) {
+      if (c.state === 'empty') return '/registry';
+      const q = new URLSearchParams(); const t = pickTower(c); if (t) q.set('tower', t);
+      const e = searchEmail(c); if (e) q.set('email', e);
+      return '/registry' + (q.toString() ? '?' + q : '');
+    },
+    render(c) {
+      // Matriz de permisos R1/R3: solo Administrator (Marco BoardMember → 403, HU-001)
+      if (!c.persona.admin) { c.title = 'No tienes acceso a esta página'; return CH.deniedView(); }
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      c.title = 'Padrón';
+      // Estados de error del formulario "Agregar torre" (sin escribir datos)
+      if ((c.state === 'towerRequired' || c.state === 'towerDuplicate') && !c.data.init) {
+        c.data.init = true;
+        towerMsg = towerError(c.state === 'towerRequired' ? '' : ' b ', REG.towers());
+      }
+      return renderData(c);
+    },
+    afterRender() { REG.syncAsOfControl(); }
+  });
+  REG.bindAsOf(ctx);
+
+  function toData() {
+    if (ctx.state !== 'data') { ctx.state = 'data'; const r = document.getElementById('ch-st-data'); if (r) r.checked = true; }
+  }
+  function syncUrl() {
+    try { const q = new URLSearchParams(location.search); q.delete('state');
+      if (tower) q.set('tower', tower); else q.delete('tower');
+      if (email) q.set('email', email); else q.delete('email');
+      history.replaceState(null, '', '?' + q.toString()); } catch (e) { }
+  }
+
+  document.addEventListener('click', e => {
+    const tb = e.target.closest('a[data-tower]');
+    if (tb) { e.preventDefault(); if (ctx.state === 'towerEmpty' && tb.dataset.tower === 'D') return;
+      tower = tb.dataset.tower; towerMsg = null; toData(); syncUrl(); ctx.rerender(); const h2 = document.getElementById('h-tower'); if (h2) h2.focus(); }
+  });
+
+  document.addEventListener('change', e => { if (e.target.name === 'ch-st') towerMsg = null; }, true);
+
+  document.addEventListener('submit', e => {
+    if (e.target.id === 'f-search') {               // GET ?email=
+      e.preventDefault();
+      email = document.getElementById('s-email').value;
+      towerMsg = null; toData(); syncUrl(); ctx.rerender();
+      const s = document.getElementById('s-email'); if (s && s.getAttribute('aria-invalid')) s.focus();
+      else { const r = document.querySelector('.result'); if (r) r.setAttribute('tabindex', '-1'), r.focus(); }
+      return;
+    }
+    if (e.target.id === 'f-tower') {                // POST /api/towers
+      e.preventDefault();
+      const raw = document.getElementById('t-code').value, code = raw.trim().toUpperCase();
+      CH.sending(document.getElementById('btn-tower'), 500, () => {
+        const empty = ctx.state === 'empty';
+        const existing = empty ? [] : REG.towers();
+        towerMsg = towerError(raw, existing);
+        if (!towerMsg) {
+          if (empty && REG.base() === 'seed') REG.startEmpty();       // F9 desde cero
+          REG.addTower(code); tower = code; towerMsg = { ok: code };
+          toData(); syncUrl();
+        }
+        ctx.rerender();
+        const t = document.getElementById('t-code'); if (towerMsg && towerMsg.err && t) t.focus();
+      });
+    }
+  });
+})();
+</script>
+</body>
+</html>

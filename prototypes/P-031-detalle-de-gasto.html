@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Detalle de gasto · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.head{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3)}
+.amount{font-size:1.5rem;line-height:1.3;font-weight:700}
+.amount.is-void{color:var(--color-text-muted)}
+.void-note{display:block;color:var(--color-danger);font-weight:600;font-size:1rem}
+.reason{margin:var(--space-1) 0 0;overflow-wrap:anywhere}
+.file{display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap;margin:0}
+.file svg{flex:none;color:var(--color-text-muted);width:32px;height:32px}
+.file b{overflow-wrap:anywhere}
+.dl-status{margin:0;min-height:1.5rem;display:flex;gap:var(--space-2);align-items:center;color:var(--color-success);font-weight:600}
+.dl-status:empty{display:none}
+.dl-status svg{flex:none}
+.btn-danger-secondary{background:var(--color-surface);color:var(--color-danger);border-color:var(--color-danger)}
+.btn-danger-secondary:hover{background:var(--color-danger-subtle)}
+.hire-link{font-weight:600}
+.hire-row{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center}
+.locked{display:flex;gap:var(--space-3);align-items:flex-start;color:var(--color-text-muted);margin:0}
+.locked svg{flex:none;margin-top:2px}
+.notfound{align-items:center;text-align:center;margin:0 auto}
+.notfound>svg{color:var(--color-text-muted)}
+.proto-x{margin-top:var(--space-2)}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script src="assets/expenses-data.js"></script>
+<script>
+// P-031 · Detalle de gasto — 09-ui-spec.md §3.5. Flujos F7 (pasos 3–4) y F6 (pasos 2–6, regreso desde P-032/P-033/P-034).
+// Reglas: RN-091, RN-092, RN-095, RN-107, RN-036, RN-142, RN-144, RN-167, RN-015/RN-016/RN-105, RN-103.
+// Datos: assets/expenses-data.js (EXP) con lo registrado, anulado o vinculado en la sesión ('ch:exp-session-v1');
+// contrataciones de 'ch:hires-v1' o CH.DATA.hires. ?arrive=registered|voided|linked|already muestra el aviso del regreso (F6).
+(function () {
+  const { ICON, rn, alert, money, esc } = CH;
+  const { CAT, RUC, monthLabel, dt, day, kbText, DOC, HIRE_BADGE } = EXP;
+
+  // ---------- Qué gasto se ve ----------
+  // Sin ?id, cada estado elige un gasto representativo que exista a la fecha simulada (el primero de la lista que exista).
+  const CAND = {
+    data: [['e-1104', 'e-1102']],
+    active: [['e-1105', 'e-1102'], e => !e.voided && !e.hire],
+    voided: [['e-1104', 'e-1009'], e => e.voided],
+    linked: [['e-1103', 'e-1010'], e => !!e.hire],
+    empty: [['e-1110', 'e-1101']]
+  };
+  // Regreso desde otra pantalla (F6): solo lo ve el Administrator
+  const ARRIVE = {
+    registered: { cand: 'active', alert: ['success', 'Registraste el gasto.', '', 'status'], note: 'F6 paso 2 · P-032 → P-031 del gasto nuevo (PRG) · HU-010 C1' },
+    voided: { cand: 'voided', alert: ['success', 'Anulaste el gasto.', '', 'status'], note: 'F6 paso 4 · P-033 → P-031 con el gasto Anulado, motivo y fecha-hora · HU-010B C3' },
+    linked: { cand: 'linked', alert: ['success', 'Vinculaste el gasto a la contratación.', '', 'status'], note: 'F6 paso 6 · P-034 → P-031 con el enlace al expediente (P-041)' },
+    already: { cand: 'voided', alert: ['danger', 'Este gasto ya estaba anulado.', '<p>Se conservan el motivo y la fecha-hora de la primera anulación.</p>', 'alert'], note: 'EXPENSE_ALREADY_VOIDED (422) · RN-167 · HU-010B C8' }
+  };
+  const arrival = () => { const el = document.getElementById('arrive'); return el ? el.value : ''; };
+  const qId = CH.params().get('id');
+
+  function pick(c) {
+    const a = c.persona.admin ? ARRIVE[arrival()] : null;
+    const stateCand = ['active', 'voided', 'linked', 'empty'].includes(c.state) ? c.state : null;
+    let e;
+    if (stateCand) { const [ids, pred] = CAND[stateCand]; e = EXP.firstOf(ids, pred); }
+    else if (qId) e = EXP.get(qId);
+    else if (a) { const [ids, pred] = CAND[a.cand]; e = EXP.firstOf(ids, pred); }
+    else e = EXP.firstOf(CAND.data[0]);
+    const id = e ? e.id : (stateCand ? CAND[stateCand][0][0] : qId || CAND.data[0][0]);
+    if (c.state === 'notfound' || !e) return { e: null, a: null, id };
+    e.hireObj = e.hire ? EXP.hire(e.hire) : null;
+    e.ruc = RUC[e.sup] || '';
+    if (c.state === 'empty' && !a) { e.receipt = null; e.hireObj = null; }
+    return { e, a, id };
+  }
+
+  function hireRow(e) {
+    const h = e.hireObj;
+    if (!h) return '';
+    const st = h.status; // siempre el estado real de la contratación (VL fila 165)
+    const w = EXP.winner(h);
+    return `<dt>Contratación</dt><dd><span class="hire-row"><a href="#" class="hire-link" data-go="P-041" data-params="id=${esc(h.id)}">${esc(h.title)} →</a>${CH.badge(HIRE_BADGE[st][0], HIRE_BADGE[st][1])}</span>
+      ${rn('RN-095 · proveedor elegido en la contratación: ' + esc(w.supplier) + (w.supplier === e.sup ? ' (el mismo del gasto)' : ' ⚠️ distinto del proveedor del gasto (Q30)') +
+        (e.linkedAt ? ' · vinculado el ' + CH.fmtDate(e.linkedAt.slice(0, 10)) + ' ' + e.linkedAt.slice(11) : ''))}</dd>`;
+  }
+
+  function renderData(c, pk) {
+    const p = c.persona, e = pk.e, a = pk.a;
+    const mLabel = monthLabel(e.date), mParam = e.date.slice(0, 7);
+    c.title = e.desc;
+
+    let h = `<div><a href="#" class="back" data-go="P-030" data-params="month=${mParam}">← Gastos de ${mLabel}</a>
+      <nav class="crumbs" aria-label="Migas"><ol><li><a href="#" data-go="P-010">Inicio</a></li><li><a href="#" data-go="P-030" data-params="month=${mParam}">Gastos de ${mLabel}</a></li><li aria-current="page">${esc(e.desc)}</li></ol></nav>
+      <div class="head"><h1 class="page">${esc(e.desc)}</h1>${e.voided ? CH.badge('danger', 'Anulado') : ''}</div>
+      ${rn(p.admin ? 'RN-091 · inmutable: no hay botón Editar ni Borrar' : 'RN-015/RN-016/RN-105 · CanViewCondominiumFinancials evaluada en cada request · RN-091 sin Editar ni Borrar')}</div>`;
+
+    if (a) {
+      const retried = CH.params().get('retried') === '1' && arrival() === 'registered';
+      h += `<div class="alerts">${alert(a.alert[0], a.alert[1], a.alert[2] + (retried ? '<p class="muted">El reenvío usó la misma Idempotency-Key: el gasto quedó registrado una sola vez.</p>' : ''), a.alert[3])}${rn(a.note)}</div>`;
+    }
+
+    if (e.voided) h += `<div>${alert('danger', `Anulado el ${dt(e.void.at)}`, `<p class="reason">Motivo: ${esc(e.void.reason)}</p>`)}
+      ${rn('RN-092 · motivo + fecha-hora ISO 8601 en datetime (' + e.void.at + ':00-05:00) · RN-142 · sigue visible pero no suma al total')}</div>`;
+
+    h += `<section class="card" aria-label="Datos del gasto"><dl class="dl">
+      <dt>Monto</dt><dd><span class="amount tnum${e.voided ? ' is-void' : ''}">${money(e.amount)}</span>${e.voided ? '<span class="void-note">No suma al total del mes</span>' : ''}</dd>
+      <dt>Fecha del gasto</dt><dd>${day(e.date)}</dd>
+      <dt>Registrado el</dt><dd>${day(e.reg)} <span class="muted">por la ${e.by}</span></dd>
+      <dt>Categoría</dt><dd>${CAT[e.cat]}</dd>
+      <dt>Proveedor</dt><dd>${esc(e.sup)}${e.ruc ? `<span class="muted tnum"> · RUC ${e.ruc}</span>` : ''}</dd>
+      ${hireRow(e)}
+    </dl>
+    <div class="actions">${rn('RN-144 · fecha de registro además de la fecha del gasto · RN-143 cuenta en el mes de la fecha del gasto')}
+      ${rn('RN-036 · sin unidades ni nombres de personas: se registra el cargo')}${e.seed ? '' : rn('Registrado en esta sesión (P-032 · exp-session-v1)')}</div></section>`;
+
+    // Comprobante
+    h += `<section class="sec" aria-labelledby="h-rec"><h2 id="h-rec">Comprobante</h2>`;
+    if (e.receipt) {
+      h += `<p class="file">${DOC}<span><b>${esc(e.receipt.file)}</b> <span class="muted tnum">· ${kbText(e.receipt.kb)}${e.receipt.label ? ' · ' + esc(e.receipt.label) : ''}</span></span></p>
+        <div class="actions"><a class="btn btn-secondary btn-block" href="#" download="${esc(e.receipt.file)}" data-download="${esc(e.receipt.file)}" data-kb="${e.receipt.kb}">Descargar comprobante</a></div>
+        <p class="dl-status" id="dl-status" role="status"></p>
+        ${rn('RN-107 · GET /api/expenses/' + esc(e.id) + '/receipt con filtro de condominio y la misma política del gasto (403 Carla · 404 otro condominio)')}`;
+    } else {
+      h += `<div class="empty">${ICON.doc}<p class="muted">Este gasto no tiene comprobante adjunto.</p></div>
+        ${rn('⚠️ Q28 · RN-033 exige comprobante: este caso solo existe si Q28 lo vuelve opcional (datos migrados)')}`;
+    }
+    h += `</section>`;
+
+    // Acciones: solo Administrator y gasto vigente
+    if (p.admin && !e.voided) {
+      h += `<section class="sec" aria-labelledby="h-act"><h2 id="h-act">Acciones</h2>
+        <div class="actions">
+          ${e.hireObj ? '' : '<a href="#" class="btn btn-secondary btn-block" data-go="P-034" data-params="id=' + esc(e.id) + '">Vincular a una contratación</a>'}
+          <a href="#" class="btn btn-danger-secondary btn-block" data-go="P-033" data-params="id=${esc(e.id)}">Anular gasto</a></div>
+        <p class="muted">Un gasto registrado no se edita: si tiene un error, anúlalo y regístralo de nuevo.</p>
+        ${rn('Solo Administrator · Vincular solo si no hay vínculo (P-034, RN-095) · Anular → P-033 (ConfirmPage, RN-092) · RN-091')}</section>`;
+    } else if (p.admin && e.voided) {
+      h += `<p class="locked">${ICON.info}<span>Este gasto está anulado: no tiene acciones.</span></p>${rn('Estados P-031 · anulado → sin acciones · RN-167 no se anula dos veces')}`;
+    }
+    return `<div class="content read">${h}</div>`;
+  }
+
+  const arriveQ = CH.params().get('arrive');
+  const ARR_OPT = [['', 'Navegación normal'], ['registered', 'Desde P-032: registró el gasto'], ['voided', 'Desde P-033: anuló el gasto'],
+    ['linked', 'Desde P-034: vinculó el gasto'], ['already', 'Desde P-033: el gasto ya estaba anulado']];
+  const ctx = CH.init({
+    code: 'P-031', title: 'Detalle de gasto', active: 'P-030',
+    roles: ['ana', 'luis', 'marco', 'rosa', 'carla'],
+    states: [['data', 'Con datos'], ['active', 'Gasto vigente'], ['voided', 'Anulado'], ['linked', 'Con contratación vinculada'],
+             ['empty', 'Vacío (sin comprobante ni vínculo)'], ['notfound', 'No encontrado (404)'], ['loading', 'Cargando'], ['error', 'Error']],
+    extraControls: `<div class="proto-x"><label for="arrive">Llegada a la pantalla (F6, solo Administrator; también ?arrive=)</label>
+      <select id="arrive">${ARR_OPT.map(([v, t]) => `<option value="${v}"${v === (ARRIVE[arriveQ] ? arriveQ : '') ? ' selected' : ''}>${t}</option>`).join('')}</select></div>` + EXP.scenarioControls(),
+    route: c => { const pk = pick(c); return `/expenses/${c.state === 'notfound' ? 'e-9999' : pk.id}`; },
+    render(c) {
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      const pk = pick(c);
+      // RN-103: primero el condominio (404), luego el permiso (403)
+      if (!pk.e) return EXP.notFoundView(c);
+      // RN-015/RN-016: sin vínculo Owner vigente (Carla, inquilina) → P-090
+      if (!c.persona.fin) { c.title = 'No tienes acceso a esta página'; return CH.deniedView(); }
+      return renderData(c, pk);
+    },
+    afterRender() { const h = document.getElementById('nf-h1'); if (h) h.focus(); }
+  });
+
+  // ---------- Interacciones (delegación en document) ----------
+  let dlTimer = null;
+  document.addEventListener('click', ev => {
+    const b = ev.target.closest('[data-download]');
+    if (!b) return;
+    ev.preventDefault();
+    const out = document.getElementById('dl-status');
+    if (!out || b.getAttribute('aria-disabled') === 'true') return;
+    const file = b.dataset.download, kb = b.dataset.kb;
+    b.setAttribute('aria-disabled', 'true');
+    out.textContent = `Descargando ${file}…`;
+    clearTimeout(dlTimer);
+    dlTimer = setTimeout(() => {
+      b.removeAttribute('aria-disabled');
+      const o = document.getElementById('dl-status');
+      if (o) o.innerHTML = `${ICON.ok}<span>Se descargó ${esc(file)} (${esc(kbText(Number(kb)))}). Simulado: en la aplicación real lo entrega la API.</span>`;
+    }, 700);
+  });
+  // Selector "Llegada a la pantalla": vuelve a dibujar con el aviso correspondiente
+  document.addEventListener('change', ev => {
+    if (ev.target.id === 'arrive') ctx.rerender(true);
+  });
+})();
+</script>
+</body>
+</html>

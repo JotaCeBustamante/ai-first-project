@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Guarda tus códigos de recuperación · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+#codes .btn-primary{width:100%}
+.codes{margin:0;padding-left:2.25rem;display:grid;grid-template-columns:1fr 1fr;column-gap:var(--space-6);font-family:var(--font-family-mono);font-size:1.25rem;line-height:2}
+@container shell (max-width:22.5em){.codes{grid-template-columns:1fr}}
+.codes-notes{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.proto-x{margin-top:var(--space-2)}
+.proto-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;margin-top:var(--space-2)}
+.proto-info{color:var(--proto-muted);margin:var(--space-2) 0 0;max-width:52rem}
+@media print{.proto,.frame-cap,#print,.codes-notes{display:none!important}}
+</style>
+</head>
+<body>
+<script>
+// Recargar la página después de ver los códigos → estado "ya mostrados" (RN-112: se muestran una sola vez)
+try { const q = new URLSearchParams(location.search);
+  if (sessionStorage.getItem('ch:p004-shown') === '1' && !q.get('state')) { q.set('state', 'shown'); history.replaceState(null, '', location.pathname + '?' + q); } } catch (e) { }
+</script>
+<script src="assets/shell.js"></script>
+<script>
+// P-004 · Códigos de recuperación — 09-ui-spec.md §3.1. Flujo F2 (paso 2b).
+// Reglas: RN-112 (10 códigos de un solo uso, mostrados una sola vez); regeneración RN-141 diferida (ADR-0020). Cache-Control: no-store.
+(function () {
+  const { ICON, rn, alert, fieldError, store } = CH;
+  // Los 4 primeros coinciden con los de la demo de P-002
+  const CODES = ['7KQ2-M9XD', 'K7QF-9M2D', 'P3XN-8RWC', 'H4TZ-6LJB', 'W2CM-5TQA', 'R8VD-3NKE', 'B6YH-4PLS', 'D9FJ-2XRU', 'M5GT-7WZC', 'T3LQ-8BHN'];
+  const NEXT = { CondominiumSelectionRequired: 'P-005', ConsentRequired: 'P-007' };
+  const MSG_CHECK = 'Confirma que guardaste tus códigos.';
+
+  let status = null;         // { kind:'unchecked' }
+
+  function view(c) {
+    const st = c.state;
+    if (st === 'error') { c.title = 'Algo salió mal'; return errorView(); }
+    const shown = st === 'shown';
+    const err = status || (st === 'unchecked' ? { kind: 'unchecked' } : null);
+    const busy = st === 'loading';
+    c.title = 'Guarda tus códigos de recuperación';
+
+    let h = `<h1 class="page">Guarda tus códigos de recuperación</h1>`;
+    if (shown) {
+      h += `<p style="margin:0">Los códigos ya se mostraron.</p>
+        ${rn('RN-112 · al recargar ya no se ven · regenerarlos (RN-141) está diferido por ADR-0020')}
+        <form class="form" id="codes" method="post" action="/sign-in/mfa/recovery-codes">
+          <button class="btn btn-primary" type="submit">Continuar</button></form>`;
+      return h;
+    }
+    if (err) h += alert('danger', 'Revisa antes de continuar',
+      `<ul><li><a href="#saved" data-focus="saved">${MSG_CHECK}</a></li></ul>`, 'alert');
+    h += alert('warning', 'Solo los verás esta vez',
+      '<p style="margin:0">Cada código sirve una vez si pierdes tu celular. Guárdalos en un lugar seguro, fuera de este equipo.</p>');
+    if (busy) h += `<p class="rn always">SSR: no hay estado de carga en el cliente. 🧩 JS opcional: el botón pasa a "Enviando…" (aria-disabled).</p>`;
+    h += `<ol class="codes" aria-label="Códigos de recuperación">${CODES.map(x => `<li>${x}</li>`).join('')}</ol>
+      <div><button class="btn btn-secondary" type="button" id="print">Imprimir</button> ${rn('🧩 JS opcional: window.print(); oculto sin JS')}</div>
+      <form class="form" id="codes" method="post" action="/sign-in/mfa/recovery-codes" novalidate>
+        <div class="field"><label class="check" for="saved"><input type="checkbox" id="saved" name="saved" required${err ? ' aria-invalid="true" aria-describedby="saved-error"' : ''}${st === 'data' || busy ? ' checked' : ''}>
+          <span>Guardé mis códigos en un lugar seguro</span></label>
+          ${err ? `<div id="saved-error">${fieldError(MSG_CHECK)}</div>` : ''}</div>
+        <button class="btn btn-primary" type="submit"${busy ? ' aria-disabled="true"' : ''}>${busy ? 'Enviando…' : 'Continuar'}</button>
+      </form>
+      <div class="codes-notes">${rn('RN-112 · 10 códigos de un solo uso · solo accesible justo después de P-003')}${rn('Cache-Control: no-store')}
+        ${rn('Éxito según nextStep: P-005 · P-007 · returnUrl o P-010')}</div>`;
+    return h;
+  }
+
+  function errorView() {
+    return `<div class="page-state">${ICON.big}<h1 class="page">Algo salió mal</h1>
+      <p style="margin:0">Algo salió mal. Inténtalo de nuevo en unos minutos.</p>
+      <p class="muted">Si el problema continúa, comparte este código con la administración: <span class="trace">00-8c3f12a95e0b4d76b1a4e2f07c9d5b13-4d1a8e6c2b7f0935-01</span></p>
+      <button class="btn btn-primary" type="button" data-retry>Volver a intentar</button>${rn('§3.0.4 · error inesperado 500 con traceId')}</div>`;
+  }
+
+  function next(btn) {
+    btn.removeAttribute('aria-disabled'); btn.textContent = 'Continuar';
+    const step = document.getElementById('next').value;
+    if (step === 'SignedIn') return CH.finishSignIn();
+    CH.go(NEXT[step]);
+  }
+
+  const ctx = CH.init({
+    code: 'P-004', title: 'Códigos de recuperación', shell: 'auth', roleLabel: 'Quién inicia sesión',
+    roles: ['marco', 'rosa'],
+    states: [['empty', 'Inicial'], ['data', 'Casilla marcada'], ['unchecked', 'Sin marcar la casilla'], ['shown', 'Ya mostrados (recarga)'],
+             ['loading', 'Cargando'], ['error', 'Error']],
+    route: () => '/sign-in/mfa/recovery-codes',
+    extraControls: `<div class="proto-x"><label for="next">Siguiente paso al continuar (nextStep)</label>
+        <select id="next">
+          <option value="SignedIn">SignedIn → returnUrl o P-010 Inicio</option>
+          <option value="CondominiumSelectionRequired">CondominiumSelectionRequired → P-005 (más de un condominio)</option>
+          <option value="ConsentRequired">ConsentRequired → P-007</option>
+        </select></div>
+      <div class="proto-actions"><button class="proto-btn" id="first" type="button">Simular la primera visita</button></div>
+      <p class="proto-info">Recarga la página para ver que los códigos ya no se muestran (RN-112).</p>`,
+    render: view,
+    afterRender(c) { if (['empty', 'data', 'unchecked', 'loading'].includes(c.state)) store.set('p004-shown', '1'); }
+  });
+
+  document.addEventListener('submit', e => {
+    const f = e.target.closest('#codes'); if (!f) return;
+    e.preventDefault();
+    const btn = f.querySelector('button[type="submit"]');
+    if (btn.getAttribute('aria-disabled') === 'true') return;
+    if (f.saved && !f.saved.checked) { status = { kind: 'unchecked' }; return ctx.rerender(); }
+    status = null;
+    CH.sending(btn, 500, () => next(btn));
+  });
+
+  document.addEventListener('click', e => {
+    const t = e.target;
+    const fl = t.closest('[data-focus]');
+    if (fl) { e.preventDefault(); const el = document.getElementById(fl.dataset.focus); if (el) el.focus(); return; }
+    if (t.id === 'print') window.print();
+    else if (t.closest('[data-retry]') || t.id === 'first') {
+      store.set('p004-shown', ''); document.getElementById('ch-st-empty').checked = true; ctx.state = 'empty'; status = null; ctx.rerender(true);
+    }
+  });
+
+  document.addEventListener('change', e => { if (e.target.id === 'ch-role' || e.target.name === 'ch-st') status = null; }, true);
+})();
+</script>
+</body>
+</html>

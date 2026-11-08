@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Reservar un área común · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.areas{display:flex;flex-direction:column;gap:var(--space-4);max-width:48rem}
+.area{display:flex;flex-direction:column;gap:var(--space-4)}
+.area dd{font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-011 · Áreas comunes — 09-ui-spec.md §3.3. Reglas: RN-082 (reglas configuradas del área). HU-005.
+(function () {
+  const { DATA, ICON, esc, rn } = CH;
+  const ART = { 'a-salon': 'el', 'a-parrilla': 'la' };   // "Reservar el Salón de fiestas" / "Reservar la Parrilla"
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+  function card(a) {
+    const hid = 'h-' + a.id;
+    return `<section class="card area" aria-labelledby="${hid}">
+      <h2 id="${hid}">${esc(a.name)}</h2>
+      <dl class="dl">
+        <dt>Horario</dt><dd>${a.open} – ${a.close}</dd>
+        <dt>Máximo</dt><dd>${esc(a.maxHours)}</dd>
+        <dt>Aforo</dt><dd>${plural(a.capacity, 'persona', 'personas')}</dd>
+        <dt>Reserva con</dt><dd>hasta ${a.advanceDays} días de anticipación</dd>
+        <dt>Por unidad</dt><dd>${plural(a.perUnitMonth, 'reserva', 'reservas')} al mes</dd>
+      </dl>
+      <div><a href="#" class="btn btn-primary btn-block" data-go="P-012" data-params="areaId=${a.id}">Reservar ${ART[a.id] || 'el área'} ${esc(a.name)}</a></div>
+    </section>`;
+  }
+
+  function renderData(c) {
+    const areas = c.state === 'empty' ? [] : DATA.areas;
+    let h = `<div><h1 class="page">Reservar un área común</h1></div>`;
+    if (!areas.length) {
+      h += `<div class="empty">${ICON.cal}<p class="muted">La administración aún no configuró áreas comunes.</p></div>
+        <div><a href="#" class="btn btn-secondary btn-block" data-go="home">Volver al inicio</a></div>`;
+    } else {
+      h += `<div class="areas">${rn('RN-082 · cada tarjeta muestra las reglas configuradas del área (P-061) · segundos → "5 horas", "4 h 30 min"')}
+        ${areas.map(card).join('')}</div>`;
+    }
+    return `<div class="content">${h}</div>`;
+  }
+
+  CH.init({
+    code: 'P-011', title: 'Áreas comunes',
+    roles: ['ana', 'carla', 'luis'],
+    render(c) {
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      c.title = 'Reservar un área común';
+      return renderData(c);
+    }
+  });
+})();
+</script>
+</body>
+</html>

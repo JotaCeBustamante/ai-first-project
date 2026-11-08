@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Vincular a una contratación · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.head{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3)}
+.amount{font-size:1.5rem;line-height:1.3;font-weight:700}
+.amount.is-void{color:var(--color-text-muted)}
+.void-note{display:block;color:var(--color-danger);font-weight:600;font-size:1rem}
+.reason{margin:var(--space-1) 0 0;overflow-wrap:anywhere}
+.file{display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap;margin:0}
+.file svg{flex:none;color:var(--color-text-muted);width:32px;height:32px}
+.file b{overflow-wrap:anywhere}
+.btn-danger-secondary{background:var(--color-surface);color:var(--color-danger);border-color:var(--color-danger)}
+.btn-danger-secondary:hover{background:var(--color-danger-subtle)}
+.hire-row{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center}
+.locked{display:flex;gap:var(--space-3);align-items:flex-start;color:var(--color-text-muted);margin:0}
+.locked svg{flex:none;margin-top:2px}
+.proto-x{margin-top:var(--space-2);display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:flex-end}
+/* AppShell con contenido de máx. 32 rem (09-ui-spec.md P-034) */
+.content.confirm{max-width:32rem;gap:var(--space-6)}
+.sum{display:flex;flex-direction:column;gap:var(--space-2)}
+.sum p{margin:0}
+.sum-title{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:var(--space-2)}
+.sum-title strong{font-size:1.125rem}
+.confirm-actions{display:flex;flex-direction:column;gap:var(--space-3)}
+.link-form{display:flex;flex-direction:column;gap:var(--space-6);margin:0}
+.opts{display:flex;flex-direction:column;gap:var(--space-2);margin-top:var(--space-2)}
+.opt{border:1px solid var(--color-border-subtle);border-radius:var(--radius-md);padding:var(--space-3) var(--space-4)}
+.opt-text{display:flex;flex-direction:column;gap:var(--space-1)}
+.opt-title{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;font-weight:600}
+fieldset.field[aria-invalid="true"] .opt{border-color:var(--color-danger)}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script src="assets/expenses-data.js"></script>
+<script>
+// P-034 · Vincular gasto a una contratación — 09-ui-spec.md §3.5 (P-034) y flujo F6 (pasos 5–6). HU-010B.
+// Reglas: RN-095 ⚠️ Q30 (solo contrataciones Approved; EXPENSE_HIRE_NOT_APPROVED), RN-091, RN-103 (404 antes que 403).
+// Contrataciones: CH.DATA.hires o lo decidido en P-041 durante la sesión (sessionStorage 'ch:hires-v1'). Gastos: assets/expenses-data.js.
+// Tras el éxito → CH.go('P-031', 'id=…&arrive=linked'); el vínculo queda en 'ch:exp-session-v1'.
+(function () {
+  const { DATA, ICON, TODAY, NOW, esc, fmtDate, money, rn, alert, fieldError } = CH;
+
+  const { monthLabel, winner } = EXP;
+
+  // ---------- Propio de P-034 ----------
+  const DEFAULT_ID = 'e-1116';          // "Mantenimiento preventivo de ascensores · 1.ª cuota", Ascensores Andinos SAC = proveedor elegido en h-098
+  const C46_ID = 'e-1115';              // "Pintura de fachada – adelanto S/ 9,250.00" (HU-010B C4 y C6)
+  const VOIDED_IDS = ['e-1104', 'e-1009'];   // un gasto anulado que exista a la fecha simulada
+  const MSG = {
+    NOT_APPROVED: 'Solo puedes vincular el gasto a una contratación aprobada.',
+    REQUIRED: 'Elige la contratación aprobada.'                  // FIELD_REQUIRED (RN-172): "Elige {el campo}."
+  };
+  const $id = id => document.getElementById(id);
+
+  function setup(c) {
+    const d = c.data;
+    if (d.init) return d;
+    d.init = true; d.errors = null; d.fatal = false; d.sel = '';
+    d.id = idOf(c);
+    d.e = c.state === 'notfound' ? null : EXP.get(d.id);
+    d.hires = EXP.hires();
+    if (c.state === 'approved101') {                  // HU-010B C6: la Junta aprobó "Pintura de fachada" (solo en esta vista)
+      const h = d.hires.find(x => x.id === 'h-101');
+      if (h && h.status !== 'Approved') { h.status = 'Approved'; h.decided = TODAY; d.sim101 = true; }
+    }
+    if (c.state === 'empty') d.hires.forEach(h => { if (h.status === 'Approved') h.status = 'Submitted'; });
+    if (c.state === 'linked' && d.e && !d.e.hire) d.e.hire = 'h-098';
+    if (c.state === 'invalid') d.errors = { msg: MSG.REQUIRED, code: 'FIELD_REQUIRED' };
+    if (c.state === 'c4') d.errors = { msg: MSG.NOT_APPROVED, code: 'EXPENSE_HIRE_NOT_APPROVED', tamper: 'h-101' };
+    return d;
+  }
+  const approved = d => d.hires.filter(h => h.status === 'Approved');
+  function idOf(c) {
+    if (['approved101', 'c4'].includes(c.state)) return C46_ID;
+    if (c.state === 'voided') { const x = EXP.firstOf(VOIDED_IDS, e => e.voided); return x ? x.id : VOIDED_IDS[1]; }
+    return EXP.resolve(c.params.get('id') || DEFAULT_ID);
+  }
+
+  function head(c, e) {
+    const m = e.date.slice(0, 7);
+    return `<div><nav class="crumbs" aria-label="Migas"><ol>
+        <li><a href="#" data-go="P-030" data-params="month=${m}">Gastos de ${monthLabel(e.date)}</a></li>
+        <li><a href="#" data-go="P-031" data-params="id=${esc(e.id)}">${esc(e.desc)}</a></li><li aria-current="page">Vincular</li></ol></nav>
+      <a href="#" class="back" data-go="P-031" data-params="id=${esc(e.id)}">← ${esc(e.desc)}</a>
+      <h1 class="page">Vincular a una contratación</h1>${rn('🔒 Solo Administrator · RN-095 ⚠️ Q30')}</div>`;
+  }
+  const summary = e => `<section class="card sum" aria-label="Gasto">
+      <p class="sum-title"><strong>${esc(e.desc)}</strong><strong class="tnum">${money(e.amount)}</strong></p>
+      <p class="tnum"><time datetime="${e.date}">${fmtDate(e.date)}</time> · ${esc(e.sup)}</p></section>`;
+  const backBtn = e => `<div class="confirm-actions"><a href="#" class="btn btn-secondary btn-block" data-go="P-031" data-params="id=${esc(e.id)}">Volver</a></div>`;
+
+  function formView(c, d) {
+    const e = d.e, list = approved(d), err = d.errors;
+    c.title = 'Vincular a una contratación';
+    let h = head(c, e);
+    if (err) h += alert('danger', 'No pudimos vincular el gasto', `<p>Corrige este dato:</p><ul><li><a href="#f-hire" data-focus="f-hire">${err.msg}</a></li></ul>
+      ${rn(err.tamper ? `${err.code} · 422 · RN-095 · PUT /api/expenses/${e.id}/supplier-hire { supplierHireId: "${err.tamper}" } enviado directo: h-101 "Pintura de fachada" está Enviada a la Junta (HU-010B C4)` : err.code + ' · 422' + (err.code === 'FIELD_REQUIRED' ? ' · RN-172' : ''))}`, 'alert');
+    if (d.simLinked) h += alert('success', 'Vinculaste el gasto a la contratación.', `<p>Así se vería en P-031. En esta simulación no se guarda: "Pintura de fachada" sigue Enviada a la Junta en P-041. Para el camino real, apruébala en P-041 como Marco y vuelve a vincular.</p>${rn('HU-010B C6 · RN-095 · vista simulada sin efecto en la sesión (VL-P034 obs. 1)')}`, 'status');
+    if (d.sim101) h += `<p class="rn always">Escenario HU-010B C6: "Pintura de fachada" (h-101) se trata como Aprobada hoy solo en esta vista. Para que quede aprobada en toda la sesión, apruébala en P-041 como Marco (Junta Directiva).</p>`;
+    h += summary(e);
+    if (!list.length) {
+      h += `<div class="empty">${ICON.doc}<p class="muted">No hay contrataciones aprobadas para vincular.</p></div>
+        ${rn('GET /api/supplier-hires?status=Approved → vacío · solo "Volver"')}${backBtn(e)}`;
+      return `<div class="content confirm">${h}</div>`;
+    }
+    const inv = err ? ' aria-invalid="true" aria-describedby="f-hire-err"' : '';
+    h += `<form class="link-form" method="post" action="/api/expenses/${esc(e.id)}/supplier-hire" id="link-form" novalidate>
+      <fieldset class="field" id="f-hire" tabindex="-1"${inv}><legend>Contratación aprobada <span class="req">(obligatorio)</span></legend>
+        <div class="opts">${list.map(x => {
+          const w = winner(x);
+          return `<label class="check opt" for="h-${x.id}"><input type="radio" name="supplierHireId" id="h-${x.id}" value="${x.id}"${d.sel === x.id ? ' checked' : ''}>
+            <span class="opt-text"><span class="opt-title">${esc(x.title)} ${CH.badge('success', 'Aprobada')}</span>
+            <span class="muted tnum">Aprobada el <time datetime="${x.decided}">${fmtDate(x.decided)}</time></span>
+            <span class="muted">Proveedor elegido: ${esc(w.supplier)} · <span class="tnum">${money(w.amount)}</span></span></span></label>`;
+        }).join('')}</div>
+        ${err ? `<div id="f-hire-err">${fieldError(err.msg)}</div>` : ''}</fieldset>
+      ${rn('Solo Approved (GET /api/supplier-hires?status=Approved) · ⚠️ Q30 / VL-P031 obs. 4: la regla no exige que el proveedor del gasto sea el elegido')}
+      <div class="confirm-actions">
+        <button class="btn btn-primary btn-block" type="submit" id="link-btn">Vincular</button>
+        <a href="#" class="btn btn-secondary btn-block" data-go="P-031" data-params="id=${esc(e.id)}">Volver</a></div>
+    </form>${rn('PUT /api/expenses/' + esc(e.id) + '/supplier-hire · method override en SSR (form POST)')}`;
+    return `<div class="content confirm">${h}</div>`;
+  }
+
+  // Casos que la ficha no define: gasto anulado o ya vinculado (ver gaps)
+  function blockedView(c, d) {
+    const e = d.e;
+    c.title = 'Vincular a una contratación';
+    let h = head(c, e) + summary(e);
+    if (e.voided) h += alert('info', 'Este gasto está anulado: no se puede vincular.', '') + rn('⚠️ No definido en la ficha: P-031 no ofrece "Vincular" en un gasto anulado');
+    else {
+      const x = d.hires.find(y => y.id === e.hire);
+      h += alert('info', `Este gasto ya está vinculado a ${x ? '“' + esc(x.title) + '”' : 'una contratación'}.`,
+        x ? `<p><a href="#" data-go="P-041" data-params="id=${x.id}">Ver el expediente →</a></p>` : '') +
+        rn('⚠️ VL-P031 obs. 7 · la spec no dice si el vínculo se puede cambiar o quitar');
+    }
+    return `<div class="content confirm">${h}${backBtn(e)}</div>`;
+  }
+
+  const opt = (v, t) => `<option value="${v}">${t}</option>`;
+  const ctx = CH.init({
+    code: 'P-034', title: 'Vincular gasto a una contratación', active: 'P-030',
+    roles: ['rosa', 'marco', 'ana'],
+    states: [['data', 'Con datos'], ['c4', 'Pintura de fachada en la Junta (C4, probar primero)'], ['approved101', 'Pintura de fachada aprobada (C6, después de C4)'],
+             ['invalid', 'Sin elegir (422)'], ['empty', 'Sin contrataciones aprobadas'], ['linked', 'Ya vinculado'], ['voided', 'Gasto anulado'],
+             ['notfound', 'No encontrado (404)'], ['loading', 'Cargando'], ['error', 'Error']],
+    extraControls: EXP.scenarioControls() + `<div class="proto-x"><div><label for="outcome">Al pulsar "Vincular", el servidor responde</label><select id="outcome">
+        ${opt('ok', '200 · vinculado (o 422 si no eligió)')}${opt('error', '500 · error inesperado')}</select></div>
+      <button class="proto-btn" type="button" id="tamper">PUT directo con h-101 “Pintura de fachada” (Enviada a la Junta) · C4</button></div>`,
+    route: c => `/expenses/${c.state === 'notfound' ? 'e-9999' : idOf(c)}/supplier-hire`,
+    render(c) {
+      if (c.state === 'loading') return CH.loadingView('SSR: el servidor entrega la página con las contrataciones aprobadas. Al pulsar "Vincular" el botón pasa a "Enviando…" (🧩 JS opcional).');
+      const d = setup(c);
+      if (c.state === 'error' || d.fatal) { c.title = 'Algo salió mal'; return CH.errorView(); }
+      if (!d.e) return EXP.notFoundView(c);                                     // RN-103: 404 antes que 403
+      if (!c.persona.admin) { c.title = 'No tienes acceso a esta página'; return CH.deniedView(); }
+      if (d.e.voided || d.e.hire) return blockedView(c, d);
+      return formView(c, d);
+    },
+    afterRender() { const h = document.getElementById('nf-h1'); if (h) h.focus(); }
+  });
+
+  // ---------- Interacciones ----------
+  // Guarda el vínculo y vuelve a P-031 (Post/Redirect/Get).
+  // VL-P034 obs. 1: con h-101 aprobada solo en esta vista (HU-010B C6) NO se guarda nada en la sesión, porque h-101
+  // sigue Enviada a la Junta en P-041 y guardar el vínculo contradiría RN-095 y dejaría sin reproducir HU-010B C4.
+  function link(d, hireId) {
+    if (d.sim101 && hireId === 'h-101') { d.simLinked = true; d.errors = null; return ctx.rerender(true); }
+    EXP.patch(d.id, { hire: hireId, linkedAt: CH.nowStamp() });
+    CH.go('P-031', `id=${d.id}&arrive=linked`);
+  }
+
+  document.addEventListener('submit', ev => {
+    if (ev.target.id !== 'link-form') return;
+    ev.preventDefault();
+    const d = ctx.data, r = ev.target.querySelector('input[name="supplierHireId"]:checked'), outcome = $id('outcome').value;
+    d.sel = r ? r.value : '';
+    CH.sending($id('link-btn'), 800, () => {
+      if (outcome === 'error') { d.fatal = true; ctx.rerender(); return; }
+      if (!d.sel) { d.errors = { msg: MSG.REQUIRED, code: 'FIELD_REQUIRED' }; ctx.rerender(); return; }
+      const h = d.hires.find(x => x.id === d.sel);
+      if (!h || h.status !== 'Approved') { d.errors = { msg: MSG.NOT_APPROVED, code: 'EXPENSE_HIRE_NOT_APPROVED' }; ctx.rerender(); return; }
+      d.errors = null; link(d, d.sel);
+    });
+  });
+  document.addEventListener('click', ev => {
+    const fl = ev.target.closest('[data-focus]');
+    if (fl) { ev.preventDefault(); const el = $id(fl.dataset.focus); if (el) el.focus(); return; }
+    if (ev.target.id === 'tamper') {
+      // HU-010B C4: la UI no ofrece h-101 (no está Approved); el PUT llega igual (URL manipulada o formulario viejo) y el servidor lo rechaza
+      const d = ctx.data;
+      if (!$id("link-form")) return;
+      const h = d.hires.find(x => x.id === 'h-101');
+      if (h && h.status === 'Approved') { d.errors = null; link(d, 'h-101'); return; }
+      d.errors = { msg: MSG.NOT_APPROVED, code: 'EXPENSE_HIRE_NOT_APPROVED', tamper: 'h-101' };
+      ctx.rerender();
+    }
+  });
+})();
+</script>
+</body>
+</html>

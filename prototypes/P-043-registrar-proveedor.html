@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Registrar proveedor · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.content.w32{max-width:32rem}
+.head{display:flex;flex-direction:column;gap:var(--space-2)}
+.input-ruc{max-width:14rem}
+.btn-full{width:100%}
+.submit{display:flex;flex-direction:column;gap:var(--space-2);align-items:stretch}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-043 · Registrar proveedor — 09-ui-spec.md §3.6 P-043. HU-012 (C7). Reglas: RN-042 (sin cuenta ni invitación, W6),
+// RN-052 ⚠️ Q34 (RUC 10 y nombre de persona natural cifrados), RN-169 (VENDOR_RUC_INVALID_FORMAT, VENDOR_RUC_DUPLICATE;
+// §6 punto 10 resuelto el 2026-11-08), RN-172 (FIELD_REQUIRED). Textos de §3.0.6.
+// Guarda el proveedor en sessionStorage 'ch:suppliers-v1' y vuelve a returnUrl con ?vendorId= (proveedor preseleccionado en P-042).
+(function () {
+  const { rn, esc, store, alert, fieldError } = CH;
+  const SUP_KEY = 'suppliers-v1';
+  const loadSup = () => { try { const s = JSON.parse(store.get(SUP_KEY)); if (Array.isArray(s)) return s; } catch (e) { } return []; };
+  // Proveedores existentes: la misma lista que P-042 (cotizaciones del seed + uno extra + los registrados en 'ch:suppliers-v1')
+  const EXTRA_SUPPLIERS = [{ ruc: '20601122334', name: 'Impermeabilizaciones del Sur SAC' }];
+  function existingRucs() {
+    const set = new Set();
+    CH.DATA.hires.forEach(h => h.quotes.forEach(q => set.add(q.ruc)));
+    EXTRA_SUPPLIERS.forEach(s => set.add(s.ruc));
+    loadSup().forEach(s => set.add(s.ruc));
+    return set;
+  }
+  // Textos de 09-ui-spec.md §3.0.6 (copiados textualmente)
+  const MSG = {
+    VENDOR_RUC_INVALID_FORMAT: 'El RUC tiene 11 dígitos y empieza con 10 (persona natural) o 20 (empresa).',
+    VENDOR_RUC_DUPLICATE: 'Ya hay un proveedor registrado con este RUC.',
+    FIELD_REQUIRED: { 'f-ruc': 'Completa el RUC.', 'f-name': 'Completa la razón social.', 'f-person': 'Completa el nombre de la persona.' }
+  };
+  const required = id => ({ id, code: 'FIELD_REQUIRED', msg: MSG.FIELD_REQUIRED[id] });
+
+  // ---------- returnUrl (solo rutas locales; si no, /supplier-hires) ----------
+  const P = new URLSearchParams(location.search);
+  const DEFAULT_RET = '/supplier-hires';
+  let retUrl = P.get('returnUrl');
+  let retRejected = false;
+  if (!retUrl || !/^\/(?![\/\\])/.test(retUrl)) { retRejected = !!retUrl; retUrl = DEFAULT_RET; }
+  // Ruta → prototipo. La ruta de edición de P-042 no está en CH.SCREENS (VL-P041 obs. 14), así que se resuelve aquí.
+  function resolveRet(url) {
+    const [path] = url.split('?');
+    const m = path.match(/^\/supplier-hires\/([^/]+)\/edit$/);
+    if (m) return { code: 'P-042', params: 'id=' + encodeURIComponent(m[1]) };
+    return CH.resolveRoute(url) || { code: 'P-040', params: '' };
+  }
+  const RET_LABEL = { 'P-042': 'Contratación', 'P-040': 'Contrataciones', 'P-032': 'Registrar gasto' };
+
+  // ---------- Estado de la página ----------
+  let f = { ruc: '', name: '', natural: false, person: '' };
+  let errors = [];
+  const clearPage = () => { f = { ruc: '', name: '', natural: false, person: '' }; errors = []; };
+
+  function validate() {
+    const E = [], ruc = f.ruc.trim();
+    // RN-169: 11 dígitos, prefijo 10 (persona natural) o 20 (empresa) y coherente con la casilla; luego, duplicado
+    if (!ruc) E.push(required('f-ruc'));
+    else if (!/^(10|20)\d{9}$/.test(ruc) || ruc.startsWith('10') !== f.natural) E.push({ id: 'f-ruc', code: 'VENDOR_RUC_INVALID_FORMAT', msg: MSG.VENDOR_RUC_INVALID_FORMAT });
+    else if (existingRucs().has(ruc)) E.push({ id: 'f-ruc', code: 'VENDOR_RUC_DUPLICATE', msg: MSG.VENDOR_RUC_DUPLICATE });
+    if (!f.name.trim()) E.push(required('f-name'));
+    if (f.natural && !f.person.trim()) E.push(required('f-person'));
+    return E;
+  }
+
+  // ---------- Vista ----------
+  const req = '<span class="req">(obligatorio)</span>';
+  const errFor = id => errors.find(e => e.id === id);
+  const desc = (id, ...hints) => { const ids = hints.filter(Boolean); if (errFor(id)) ids.push(id + '-err');
+    return (ids.length ? ` aria-describedby="${ids.join(' ')}"` : '') + (errFor(id) ? ' aria-invalid="true"' : ''); };
+  const fe = id => errFor(id) ? `<div id="${id}-err">${fieldError(esc(errFor(id).msg))}</div>` : '';
+
+  function renderForm(c) {
+    const ret = resolveRet(retUrl), back = RET_LABEL[ret.code] || 'Volver';
+    c.title = 'Registrar proveedor';
+    let h = `<div class="head">
+      <a href="#" class="back" data-ret>← ${back}</a>
+      <nav class="crumbs" aria-label="Migas"><ol><li><a href="#" data-go="P-010">Inicio</a></li><li><a href="#" data-ret>${back}</a></li><li aria-current="page">Registrar proveedor</li></ol></nav>
+      <h1 class="page">Registrar proveedor</h1>
+      <p class="lead">El proveedor queda como un dato del condominio para usarlo en cotizaciones y gastos.</p>
+      ${rn('returnUrl=' + esc(retUrl) + (retRejected ? ' · se ignoró un returnUrl no local (§3.1)' : ''))}</div>`;
+
+    if (errors.length) {
+      h += alert('danger', 'No pudimos registrar el proveedor',
+        `<p>${errors.length === 1 ? 'Corrige este dato:' : `Corrige estos ${errors.length} datos:`}</p>
+         <ul>${errors.map(e => `<li><a href="#${e.id}" data-focus="${e.id}">${esc(e.msg)}</a></li>`).join('')}</ul>
+         ${rn('422 · ' + errors.map(e => e.code).join(' · ') + ' · RN-169 · RN-172 · se conservan los valores escritos')}`, 'alert');
+    }
+
+    h += `<form class="card form" id="f-sup" method="post" action="/api/vendors" novalidate>
+      <div class="field"><label for="f-ruc">RUC ${req}</label>
+        <p class="hint" id="f-ruc-hint">11 dígitos, sin espacios ni guiones.</p>
+        <input class="input input-ruc tnum" type="text" id="f-ruc" name="ruc" inputmode="numeric" pattern="\\d{11}" maxlength="11" autocomplete="off" value="${esc(f.ruc)}"${desc('f-ruc', 'f-ruc-hint')}>${fe('f-ruc')}
+        ${rn('RN-169 · VENDOR_RUC_INVALID_FORMAT: 11 dígitos, prefijo 10 o 20 y coherente con "Es persona natural" (10 marcada, 20 sin marcar) · VENDOR_RUC_DUPLICATE: el RUC ya es de un proveedor del condominio (seed o ch:suppliers-v1) · RN-172 FIELD_REQUIRED "Completa el RUC." · el prototipo no valida el dígito verificador')}</div>
+      <div class="field"><label for="f-name">Razón social ${req}</label>
+        <input class="input" type="text" id="f-name" name="businessName" maxlength="200" value="${esc(f.name)}"${desc('f-name')}>${fe('f-name')}
+        ${rn('RN-172 · FIELD_REQUIRED "Completa la razón social." · solo espacios cuenta como vacío')}</div>
+      <div class="field">
+        <label class="check" for="f-natural"><input type="checkbox" id="f-natural" name="isNaturalPerson" value="true"${f.natural ? ' checked' : ''}> <span>Es persona natural (RUC 10)</span></label>
+        ${rn('RN-052 ⚠️ Q34 · nombre y RUC 10 de persona natural se guardan cifrados (AES-256-GCM)')}</div>
+      <div class="field" id="person-field"><label for="f-person">Nombre de la persona <span class="req">(obligatorio si es persona natural)</span></label>
+        <p class="hint" id="f-person-hint">Solo si es persona natural.</p>
+        <input class="input" type="text" id="f-person" name="personName" maxlength="200" value="${esc(f.person)}"${desc('f-person', 'f-person-hint')}>${fe('f-person')}
+        ${rn('🧩 JS opcional: se oculta si no marcas la casilla; sin JS el campo siempre está visible con este hint · RN-172 FIELD_REQUIRED "Completa el nombre de la persona." si es persona natural')}</div>
+      ${alert('info', 'El proveedor no recibe una cuenta ni una invitación.', rn('RN-042 · W6 · Vendor como dato, sin usuario · HU-012 C7'))}
+      <div class="submit"><button class="btn btn-primary btn-full" type="submit" id="btn-sup">Registrar proveedor</button>
+        <a href="#" class="btn btn-link" data-ret>Cancelar</a></div>
+      ${rn('POST /api/vendors · éxito → returnUrl con el proveedor preseleccionado')}
+    </form>`;
+    return `<div class="content w32">${h}</div>`;
+  }
+
+  // ---------- Init ----------
+  const RET_OPTIONS = ['/supplier-hires', '/supplier-hires/h-104/edit', '/supplier-hires/h-105/edit', '/supplier-hires/new'];
+  const retOpts = (RET_OPTIONS.includes(retUrl) ? RET_OPTIONS : [retUrl].concat(RET_OPTIONS)).map(u => `<option value="${esc(u)}">${esc(u)}</option>`).join('');
+  const ctx = CH.init({
+    code: 'P-043', title: 'Registrar proveedor',
+    active: () => retUrl.startsWith('/expenses') ? 'P-030' : 'P-040',
+    roles: ['rosa', 'rosaRes', 'ana', 'luis', 'marco', 'carla', 'raul'],
+    states: [['data', 'Formulario'], ['invalid', 'Error de validación'], ['required', 'Campos vacíos (FIELD_REQUIRED)'],
+             ['rucFormat', 'RUC 10 como empresa (VENDOR_RUC_INVALID_FORMAT)'], ['rucDuplicate', 'RUC ya registrado (VENDOR_RUC_DUPLICATE)'],
+             ['loading', 'Cargando'], ['error', 'Error']],
+    extraControls: `<label for="retSel" style="margin-top:var(--space-2)">Viene de (returnUrl)</label><select id="retSel">${retOpts}</select>
+      <div style="display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-2)">
+        <button class="proto-btn" id="fillNew" type="button">Rellenar: Pinturas del Norte SAC (C7: proveedor nuevo)</button>
+        <button class="proto-btn" id="fillPL" type="button">Rellenar: Pinturas Lima SAC (C15: duplicado, VENDOR_RUC_DUPLICATE)</button>
+        <button class="proto-btn" id="fillNat" type="button">Rellenar: persona natural (RUC 10)</button></div>`,
+    route: () => '/vendors/new?returnUrl=' + encodeURIComponent(retUrl),
+    render(c) {
+      if (!c.persona.admin) { c.title = 'Acceso denegado'; return CH.deniedView() + `<div class="content">${rn('Solo el Administrator registra proveedores → 403 (P-090) · matriz de permisos, fila H5 (Authz_Vendors_Write)')}</div>`; }
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      const INIT = {
+        invalid: { ruc: '2051234567', name: '', natural: false, person: '' },                       // 10 dígitos y sin razón social
+        required: { ruc: '', name: '  ', natural: true, person: '' },                               // vacíos (solo espacios cuenta como vacío)
+        rucFormat: { ruc: '10456789012', name: 'Juan Pérez Gálvez', natural: false, person: '' },   // RN-169: prefijo 10 sin marcar persona natural
+        rucDuplicate: { ruc: '20512345678', name: 'Pinturas Lima SAC', natural: false, person: '' } // RN-169: ya es proveedor del condominio
+      };
+      if (INIT[c.state] && !c.data.init) {
+        c.data.init = true;
+        f = Object.assign({}, INIT[c.state]);
+        errors = validate();
+      }
+      return renderForm(c);
+    },
+    // VL fila 150: el HTML entrega el campo visible; solo el script lo oculta mientras la casilla no está marcada
+    afterRender() { const pf = $id('person-field'), nat = $id('f-natural'); if (pf && nat) pf.hidden = !nat.checked; }
+  });
+  const $id = id => document.getElementById(id);
+  $id('retSel').value = retUrl;
+
+  function sync() {
+    if (!$id('f-ruc')) return;
+    f = { ruc: $id('f-ruc').value, name: $id('f-name').value, natural: $id('f-natural').checked, person: $id('f-person').value };
+  }
+  function goBack(extra) {
+    const r = resolveRet(retUrl);
+    const q = new URLSearchParams(r.params);
+    if (extra) Object.keys(extra).forEach(k => q.set(k, extra[k]));
+    CH.go(r.code, q.toString());
+  }
+
+  document.addEventListener('change', e => {
+    const t = e.target;
+    if (t.id === 'f-natural') { const pf = $id('person-field'); pf.hidden = !t.checked; if (t.checked) $id('f-person').focus(); }
+    else if (t.id === 'retSel') {
+      retUrl = t.value;
+      const q = new URLSearchParams(location.search); q.set('returnUrl', retUrl); q.set('role', ctx.roleKey);
+      history.replaceState(null, '', '?' + q);
+      sync(); ctx.rerender();
+    }
+  });
+  document.addEventListener('change', e => { if (e.target.id === 'ch-role' || e.target.name === 'ch-st') clearPage(); }, true);
+
+  document.addEventListener('click', e => {
+    const t = e.target;
+    if (t.closest('[data-ret]')) { e.preventDefault(); goBack(); return; }
+    const fx = t.closest('[data-focus]');
+    if (fx) { e.preventDefault(); const el = $id(fx.dataset.focus); if (el) { el.focus(); el.scrollIntoView({ block: 'center' }); } return; }
+    if (t.id === 'fillPL' || t.id === 'fillNat' || t.id === 'fillNew') {
+      if (!$id('f-ruc')) return;
+      f = t.id === 'fillPL' ? { ruc: '20512345678', name: 'Pinturas Lima SAC', natural: false, person: '' }
+        : t.id === 'fillNew' ? { ruc: '20604455667', name: 'Pinturas del Norte SAC', natural: false, person: '' }
+                            : { ruc: '10457812369', name: 'Julio Vargas Ríos', natural: true, person: 'Julio Vargas Ríos' };
+      errors = []; ctx.rerender(); $id('f-ruc').focus();
+    }
+  });
+  // "Reiniciar datos" del shell no conoce 'suppliers-v1'
+  document.addEventListener('click', e => { if (e.target.closest('[data-ch-reset]')) { try { sessionStorage.removeItem('ch:' + SUP_KEY); } catch (err) { } } }, true);
+
+  document.addEventListener('submit', e => {
+    if (e.target.id !== 'f-sup') return;
+    e.preventDefault(); sync();
+    errors = validate();
+    if (errors.length) { ctx.rerender(); return; }
+    CH.sending($id('btn-sup'), 700, () => {
+      const ruc = f.ruc.trim();
+      const sup = { id: 's-' + ruc, ruc, name: f.name.trim(), natural: f.natural };
+      if (f.natural) sup.personName = f.person.trim();
+      // Sin cuenta de usuario ni invitación (RN-042): solo se guarda el dato del proveedor
+      store.set(SUP_KEY, JSON.stringify(loadSup().filter(s => s.ruc !== ruc).concat([sup])));
+      goBack({ vendorId: sup.id });
+    });
+  });
+})();
+</script>
+</body>
+</html>

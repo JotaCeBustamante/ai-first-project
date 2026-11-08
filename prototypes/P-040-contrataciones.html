@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Contrataciones · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.page-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;gap:var(--space-4)}
+.page-head .actions{flex:0 1 auto}
+.hires{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-3)}
+.hire{display:flex;flex-direction:column;gap:var(--space-2)}
+.hire-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:var(--space-2) var(--space-4)}
+.hire-head h2{font-size:1.25rem;line-height:1.4}
+.hire p{margin:0}
+.hire .muted{font-size:1rem}
+.pager{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3);color:var(--color-text-muted)}
+.pager span[aria-disabled]{min-height:44px;display:inline-flex;align-items:center;padding:0 var(--space-2);color:var(--color-text-muted)}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-040 · Contrataciones — 09-ui-spec.md §3.6 y flujo F8. Reglas: RN-041 ⚠️ Q25, RN-099, RN-015.
+(function () {
+  const { ICON, money, badge, rn, esc, fmtDate, store } = CH;
+
+  // ---------- Datos ficticios compartidos con P-041 (mismo seed y misma clave de sesión) ----------
+  const KEY = 'hires-v1';
+  const SEED = CH.DATA.hires; // seed compartido en assets/shell.js
+  const load = () => { try { const s = JSON.parse(store.get(KEY)); if (Array.isArray(s)) return s; } catch (e) { } return JSON.parse(JSON.stringify(SEED)); };
+  let hires = load();
+  const q25 = () => store.get('q25') === '1';
+
+  const STATUS = { Draft: ['neutral', 'Borrador'], Submitted: ['warning', 'Enviada a la Junta'], Approved: ['success', 'Aprobada'] };
+  const statusBadge = s => badge(STATUS[s][0], STATUS[s][1]);
+  const dateTag = d => `<time datetime="${d}" class="tnum">${fmtDate(d)}</time>`;
+
+  // ---------- Pestañas por rol (spec: Por decidir Brd/Adm · Aprobadas todos · Borradores solo Adm) ----------
+  const TAB_TEXT = { Submitted: 'Por decidir', Approved: 'Aprobadas', Draft: 'Borradores' };
+  const EMPTY_TEXT = { Submitted: 'No hay contrataciones por decidir.', Approved: 'Aún no hay contrataciones aprobadas.', Draft: 'No hay borradores.' };
+  function tabsFor(p) {
+    if (p.admin) return ['Submitted', 'Approved', 'Draft'];
+    if (p.board) return ['Submitted', 'Approved'];
+    return q25() ? ['Submitted', 'Approved'] : ['Approved'];       // propietarios (Q25)
+  }
+  const defaultTab = p => p.board ? 'Submitted' : p.admin ? 'Draft' : 'Approved';
+  let tab = null;
+  function currentTab(c) {
+    const allowed = tabsFor(c.persona);
+    if (!tab) tab = c.params.get('status');
+    if (!allowed.includes(tab)) tab = defaultTab(c.persona);
+    return tab;
+  }
+
+  const listFor = (c, st) => c.state === 'empty' ? [] : hires.filter(h => h.status === st)
+    .sort((a, b) => (sortDate(b)).localeCompare(sortDate(a)));
+  const sortDate = h => h.status === 'Approved' ? h.decided : h.status === 'Submitted' ? h.submitted : (h.rejected || h.created);
+
+  function quotesLine(h) {
+    const n = h.quotes.length;
+    if (!n) return 'Sin cotizaciones';
+    const amts = h.quotes.map(q => q.amount), lo = Math.min(...amts), hi = Math.max(...amts);
+    return n === 1 ? `1 cotización · ${money(lo)}` : `${n} cotizaciones · desde ${money(lo)} hasta ${money(hi)}`;
+  }
+  function dateLine(h) {
+    if (h.status === 'Approved') return `Aprobada el ${dateTag(h.decided)}`;
+    if (h.status === 'Submitted') return `Enviada el ${dateTag(h.submitted)}`;
+    if (h.rejected) return `Rechazada por la Junta Directiva el ${dateTag(h.rejected)} · vuelve a Borrador`;
+    return `Creada el ${dateTag(h.created)}`;
+  }
+
+  function renderData(c) {
+    const p = c.persona, t = currentTab(c), tabs = tabsFor(p);
+    const pendingCount = listFor(c, 'Submitted').length;
+    let h = `<div class="page-head"><h1 class="page">Contrataciones</h1>` +
+      (p.admin ? `<div class="actions"><a href="#" class="btn btn-secondary" data-go="P-043" data-params="returnUrl=/supplier-hires">Registrar proveedor</a>
+        <a href="#" class="btn btn-primary" data-go="P-042">Nueva contratación</a></div>` : '') + `</div>`;
+
+    h += `<section class="sec" aria-labelledby="h-list"><h2 id="h-list" class="sr-only">Contrataciones: ${TAB_TEXT[t].toLowerCase()}</h2>
+      <nav aria-label="Filtrar por estado"><div class="tabs">` +
+      tabs.map(s => `<a href="?status=${s}" data-tab="${s}"${s === t ? ' aria-current="page"' : ''}>${TAB_TEXT[s]}${s === 'Submitted' ? ` <span class="tnum">&nbsp;(${pendingCount})</span>` : ''}</a>`).join('') +
+      `</div></nav>`;
+    if (p.board) h += rn('RN-099 · el contador de "Por decidir" coincide con el de Inicio (P-010), también con 0');
+    if (!p.admin && !p.board) h += rn(q25() ? 'RN-041 ⚠️ Q25 · simulado: los propietarios ven también "Por decidir"' : 'RN-041 ⚠️ Q25 · por defecto los propietarios ven solo "Aprobadas"');
+    if (p.admin && t === 'Draft') h += rn('Borradores: solo los ve el Administrator · incluye los rechazados por la Junta (RN-098)');
+
+    const list = listFor(c, t);
+    if (!list.length) {
+      h += `<div class="empty">${ICON.doc}<div><p class="muted">${EMPTY_TEXT[t]}</p>` +
+        (p.admin && t === 'Draft' ? `<p style="margin:var(--space-2) 0 0"><a href="#" data-go="P-042">Crear una contratación</a></p>` : '') + `</div></div>`;
+    } else {
+      h += `<ul class="hires">` + list.map(x => `<li class="card hire">
+          <div class="hire-head"><h2><a href="#" data-go="P-041" data-params="id=${x.id}">${esc(x.title)}</a></h2>${statusBadge(x.status)}</div>
+          <p class="tnum">${quotesLine(x)}</p>
+          <p class="muted">${dateLine(x)}</p></li>`).join('') + `</ul>
+        <nav aria-label="Paginación" class="pager"><span aria-disabled="true">← Anterior</span><span class="tnum">Página 1 de 1</span><span aria-disabled="true">Siguiente →</span></nav>
+        ${rn('Pagination · 20 por página')}`;
+    }
+    h += `</section>`;
+    return `<div class="content">${h}</div>`;
+  }
+
+  const ctx = CH.init({
+    code: 'P-040', title: 'Contrataciones',
+    roles: ['marco', 'rosa', 'luis', 'ana', 'carla'],
+    extraControls: `<label class="chk" for="q25"><input type="checkbox" id="q25"> Q25: propietarios ven "Por decidir"</label>
+      <button class="proto-btn" id="reset" type="button">Restablecer datos de ejemplo</button>`,
+    route: c => c.persona.fin ? `/supplier-hires?status=${currentTab(c)}` : '/supplier-hires',
+    menuCounts: c => c.persona.board && (c.state === 'data' || c.state === 'empty') ? { 'P-040': listFor(c, 'Submitted').length } : {},
+    render(c) {
+      if (!c.persona.fin) { c.title = 'Acceso denegado'; return CH.deniedView() + `<div class="content">${rn('RN-015 · inquilina sin vínculo Owner → 403 (P-090)')}</div>`; }
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      c.title = 'Contrataciones';
+      return renderData(c);
+    }
+  });
+  document.getElementById('q25').checked = q25();
+
+  function syncUrl() {
+    const q = new URLSearchParams(location.search);
+    q.set('status', tab); q.set('role', ctx.roleKey);
+    history.replaceState(null, '', '?' + q);
+  }
+  document.addEventListener('click', e => {
+    const a = e.target.closest('[data-tab]');
+    if (a) { e.preventDefault(); tab = a.dataset.tab; syncUrl(); ctx.rerender(); const cur = document.querySelector('[data-tab][aria-current="page"]'); if (cur) cur.focus(); return; }
+    if (e.target.id === 'reset') { try { sessionStorage.removeItem('ch:' + KEY); } catch (err) { } hires = load(); ctx.rerender(); }
+  });
+  document.addEventListener('change', e => {
+    if (e.target.id === 'q25') { store.set('q25', e.target.checked ? '1' : '0'); ctx.rerender(); }
+  });
+  // Al cambiar de rol se recalcula la pestaña inicial del nuevo rol
+  document.addEventListener('change', e => { if (e.target.id === 'ch-role') tab = '-'; }, true);
+})();
+</script>
+</body>
+</html>

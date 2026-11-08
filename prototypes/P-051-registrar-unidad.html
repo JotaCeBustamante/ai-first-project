@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Registrar unidad · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.content.narrow{max-width:32rem}
+.input-num{max-width:10rem}
+.submit{display:flex;flex-direction:column;gap:var(--space-3)}
+.submit .btn{width:100%}
+.proto-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;margin-top:var(--space-2)}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script src="assets/registry-data.js"></script>
+<script>
+// P-051 · Registrar unidad — 09-ui-spec.md §3.7. Flujo F9 paso 2. HU-001.
+// Reglas: RN-003 (número único por torre), RN-058 (^\d{3,4}$), RN-004 (CondominiumId del Administrator), R1 de la matriz de permisos,
+// RN-172 (FIELD_REQUIRED). Textos de §3.0.6.
+(function () {
+  const { rn, alert, esc, fieldError } = CH;
+  const FIELD_ORDER = ['f-tower', 'f-number'];
+  const MSG = {
+    UNIT_NUMBER_DUPLICATE: 'Esta torre ya tiene una unidad con ese número.',
+    UNIT_NUMBER_INVALID_FORMAT: 'El número de unidad debe tener 3 o 4 dígitos, sin guiones ni letras.',
+    // FIELD_REQUIRED (RN-172): "Elige {el campo}." (lista) o "Completa {el campo}." (texto)
+    FIELD_REQUIRED: { 'f-tower': 'Elige la torre.', 'f-number': 'Completa el número de la unidad.' }
+  };
+  const required = id => ({ id, code: 'FIELD_REQUIRED', msg: MSG.FIELD_REQUIRED[id] });
+  // Estados que muestran la respuesta 422 del servidor con los valores enviados
+  const PRESET = {
+    invalid: ['A', '52', 'HU-001 · 2 dígitos'],
+    invalid5: ['A', '12345', 'HU-001 · 5 dígitos (enviado sin el maxlength del navegador, p. ej. por la API)'],
+    dash: ['A', '5-02', 'HU-001 · con guion'],
+    dup: ['A', '502', 'HU-001 · la torre A ya tiene la 502'],
+    required: ['', '   ', 'RN-172 · sin torre y número con solo espacios']
+  };
+
+  function setup(c) {
+    const d = c.data; d.init = true; d.errors = null;
+    const pt = c.params.get('tower');
+    d.f = { tower: REG.towers().includes(pt) ? pt : '', number: '' };
+    if (PRESET[c.state]) {
+      const [t, n] = PRESET[c.state];
+      d.f = { tower: !t ? '' : REG.towers().includes(t) ? t : (REG.towers()[0] || ''), number: n };
+      d.errors = validate(d.f);
+    }
+  }
+  const ensure = c => { if (!c.data.init) setup(c); };
+
+  // Simula la validación del servidor (POST /api/units)
+  function validate(f) {
+    const E = [], number = f.number.trim();
+    if (!f.tower) E.push(required('f-tower'));
+    if (!number) E.push(required('f-number'));
+    else if (!/^\d{3,4}$/.test(number)) E.push({ id: 'f-number', code: 'UNIT_NUMBER_INVALID_FORMAT', msg: MSG.UNIT_NUMBER_INVALID_FORMAT });
+    else if (f.tower && REG.unitByCode(f.tower + '-' + number)) E.push({ id: 'f-number', code: 'UNIT_NUMBER_DUPLICATE', msg: MSG.UNIT_NUMBER_DUPLICATE });
+    return E.sort((x, y) => FIELD_ORDER.indexOf(x.id) - FIELD_ORDER.indexOf(y.id));
+  }
+
+  function renderPage(c) {
+    const d = c.data, f = d.f, E = d.errors || [], ts = REG.towers();
+    const err = id => E.find(x => x.id === id);
+    const desc = (id, ...hints) => { const ids = hints.filter(Boolean); if (err(id)) ids.push(id + '-err');
+      return (ids.length ? ` aria-describedby="${ids.join(' ')}"` : '') + (err(id) ? ' aria-invalid="true"' : ''); };
+    const fe = id => err(id) ? `<div id="${id}-err">${fieldError(esc(err(id).msg))}</div>` : '';
+    const req = '<span class="req">(obligatorio)</span>';
+    const backParams = f.tower ? ` data-params="tower=${f.tower}"` : '';
+
+    let h = `<div><nav class="crumbs" aria-label="Migas de pan"><ol><li><a href="#" data-go="P-050"${backParams}>Padrón</a></li><li aria-current="page">Registrar unidad</li></ol></nav>
+      <a href="#" class="back" data-go="P-050"${backParams}>← Padrón</a>
+      <h1 class="page">Registrar unidad</h1></div>`;
+    h += REG.asOfNote();
+    if (E.length) {
+      h += alert('danger', 'No pudimos registrar la unidad',
+        `<p>${E.length === 1 ? 'Corrige este dato:' : `Corrige estos ${E.length} datos:`}</p>
+         <ul>${E.map(e => `<li><a href="#${e.id}" data-focus="${e.id}">${esc(e.msg)}</a></li>`).join('')}</ul>
+         ${rn('422 · ' + E.map(e => e.code).join(', ') + (PRESET[c.state] ? ' · ' + PRESET[c.state][2] : '') + ' · se conservan los valores')}`, 'alert');
+    }
+    if (!ts.length) {
+      h += alert('info', 'Primero agrega una torre en el padrón.', '');
+      h += `<div><a href="#" class="btn btn-secondary btn-block" data-go="P-050">Ir al padrón</a></div>`;
+      return `<div class="content narrow">${h}</div>`;
+    }
+    h += `<form class="form" method="post" action="/api/units" id="f-unit" novalidate>
+      <div class="field"><label for="f-tower">Torre ${req}</label>
+        <select class="select" id="f-tower" name="tower"${desc('f-tower')}><option value="">Elige la torre</option>
+        ${ts.map(t => `<option value="${t}"${t === f.tower ? ' selected' : ''}>Torre ${t}</option>`).join('')}</select>${fe('f-tower')}
+        ${rn('RN-172 · FIELD_REQUIRED "Elige la torre."')}</div>
+      <div class="field"><label for="f-number">Número ${req}</label>
+        <p class="hint" id="f-number-hint">3 o 4 dígitos, sin guiones. Ejemplo: 502 o 1203.</p>
+        <input class="input input-num tnum" id="f-number" name="number" inputmode="numeric" pattern="\\d{3,4}" maxlength="4" autocomplete="off" value="${esc(f.number)}"${desc('f-number', 'f-number-hint')}>${fe('f-number')}
+        ${rn('RN-058 · ^\\d{3,4}$ (piso + número) · RN-003 · único dentro de la torre; la misma 502 puede existir en otra torre · RN-172 vacío o solo espacios → FIELD_REQUIRED "Completa el número de la unidad."')}</div>
+      <div class="submit"><button class="btn btn-primary" type="submit" id="btn-save">Registrar unidad</button>
+        <a href="#" class="btn btn-secondary" data-go="P-050"${backParams}>Cancelar</a></div>
+      ${rn('RN-004 · la unidad se guarda con el CondominiumId del Administrator, nunca con uno enviado en el cuerpo')}
+    </form>`;
+    return `<div class="content narrow">${h}</div>`;
+  }
+
+  const ctx = CH.init({
+    code: 'P-051', title: 'Registrar unidad', active: 'P-050',
+    roles: ['rosa', 'rosaRes', 'marco', 'ana', 'raul'],
+    states: [['data', 'Con datos'], ['invalid', 'Número de 2 dígitos (52)'], ['invalid5', 'Número de 5 dígitos (12345)'],
+      ['dash', 'Número con guion (5-02)'], ['dup', 'Unidad repetida (A-502)'], ['required', 'Campos vacíos (FIELD_REQUIRED)'], ['loading', 'Cargando'], ['error', 'Error']],
+    extraControls: `<div class="proto-actions"><button class="proto-btn" type="button" data-fill="A|1203">Rellenar A-1203 (4 dígitos)</button>
+      <button class="proto-btn" type="button" data-fill="B|502">Rellenar B-502 (misma 502, otra torre)</button>
+      <button class="proto-btn" type="button" data-fill="A|502">Rellenar A-502 (repetida)</button></div>${REG.asOfControl()}`,
+    route(c) { ensure(c); return '/registry/units/new' + (c.data.f.tower ? '?tower=' + c.data.f.tower : ''); },
+    render(c) {
+      // Matriz R1: solo Administrator (Marco BoardMember intenta registrar la 503 → 403, HU-001)
+      if (!c.persona.admin) { c.title = 'No tienes acceso a esta página'; return CH.deniedView(); }
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      ensure(c); c.title = 'Registrar unidad';
+      return renderPage(c);
+    },
+    afterRender() { REG.syncAsOfControl(); }
+  });
+  REG.bindAsOf(ctx);
+
+  const $id = id => document.getElementById(id);
+  function sync() { const f = ctx.data.f; if (!f) return; if ($id('f-tower')) f.tower = $id('f-tower').value; if ($id('f-number')) f.number = $id('f-number').value; }
+
+  document.addEventListener('click', e => {
+    const fl = e.target.closest('[data-focus]');
+    if (fl) { e.preventDefault(); const el = $id(fl.dataset.focus); if (el) { el.focus(); el.scrollIntoView({ block: 'center' }); } return; }
+    const fill = e.target.closest('[data-fill]');
+    if (fill && ctx.persona.admin && ctx.state !== 'loading' && ctx.state !== 'error') {
+      ensure(ctx); const [t, n] = fill.dataset.fill.split('|');
+      ctx.data.f = { tower: REG.towers().includes(t) ? t : '', number: n }; ctx.data.errors = null; ctx.rerender();
+    }
+  });
+  document.addEventListener('change', e => { if (e.target.id === 'f-tower') sync(); });
+
+  document.addEventListener('submit', e => {
+    if (e.target.id !== 'f-unit') return;
+    e.preventDefault(); sync();
+    CH.sending($id('btn-save'), 600, () => {
+      const f = ctx.data.f, E = validate(f);
+      if (E.length) { ctx.data.errors = E; ctx.rerender(); return; }
+      const u = REG.addUnit(f.tower, f.number.trim());
+      CH.go('P-052', 'id=' + u.id + '&registered=1');         // PRG → P-052 con Alert success
+    });
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Crea tu cuenta · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+#activate .btn-primary,.auth-card .btn-full{width:100%}
+.inv-notes{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.proto-x{margin-top:var(--space-2)}
+.proto-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;margin-top:var(--space-2)}
+.proto-info{color:var(--proto-muted);margin:var(--space-2) 0 0;max-width:56rem}
+.proto-info b{color:var(--proto-fg)}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-006 · Activar cuenta por invitación — 09-ui-spec.md §3.1. Flujo F1 (pasos 1, 2, 2a, 2b). HU-002.
+// Reglas: RN-007 (cuenta solo por invitación), RN-009 (hash Argon2id, en servidor), RN-110 (vence a los 604,800 s),
+// RN-116 (12–64 caracteres, sin composición), RN-117 (lista local de filtradas), RN-122 (cuenta existente),
+// RN-138/RN-139 (invitación anulada), RN-165 (un solo uso; reajustada el 2026-11-08: cada código de invitación con su propio texto de §3.0.6). Éxito → P-007.
+(function () {
+  const { DATA, ICON, rn, alert, fieldError, esc, store, fmtDate, TODAY, NOW } = CH;
+  const VALIDITY = 604800;                                     // RN-110: 7 días
+  const MSG = {                                                // 09-ui-spec.md §3.0.6, textuales
+    INVITATION_EXPIRED: 'Esta invitación venció. Pide una nueva a la administración.',
+    INVITATION_ALREADY_USED: 'Esta invitación ya no es válida. Pide una nueva a la administración.',
+    INVITATION_REVOKED: 'Esta invitación fue anulada. Pide una nueva a la administración.',
+    PASSWORD_LENGTH_INVALID: 'La contraseña debe tener entre 12 y 64 caracteres.',
+    PASSWORD_BREACHED: 'Esta contraseña aparece en filtraciones conocidas. Elige otra.'
+  };
+  const STATE_CODE = { expired: 'INVITATION_EXPIRED', used: 'INVITATION_ALREADY_USED', revoked: 'INVITATION_REVOKED' };
+  const ROLE_TEXT = { Resident: 'Residente', NonResidentOwner: 'Propietario no residente', Concierge: 'Portería' };   // §3.0.5
+  const EMAIL = { ana: 'ana.quispe@example.pe', carla: 'carla.diaz@example.pe', luis: 'luis.rojas@example.pe', raul: 'raul.mendoza@example.pe' };
+  const ROLE_OF = { ana: 'Resident', carla: 'Resident', luis: 'NonResidentOwner', raul: 'Concierge' };
+  // Lista local de contraseñas filtradas (RN-117: no se consulta ningún servicio externo). Extracto de demo.
+  const BREACHED = ['password1234', 'contraseña123456', '123456789012', 'qwertyuiop123', 'administrador1', 'iloveyou1234'];
+  const len = s => Array.from(s).length;                       // caracteres (puntos de código), no bytes
+
+  // Invitaciones de la demo (token → datos). Fecha-hora local de Lima.
+  const SIM_NOW = TODAY + 'T' + NOW + ':00';
+  const INVITES = {
+    'inv-carla-ok': { who: 'carla', condo: DATA.condo, issued: '2026-11-02T18:40:00' },
+    'inv-luis-ok':  { who: 'luis', condo: DATA.condo, issued: '2026-11-03T09:15:00' },
+    'k9F2xQ7mTb':   { who: 'ana', condo: 'Torres del Parque', issued: '2026-11-03T11:00:00', existing: true },     // RN-122 · HU-002 C12
+    'inv-vencida':  { who: 'ana', condo: DATA.condo, issued: '2026-10-28T10:29:59' },                              // 604,801 s a las 10:30:00
+    'inv-usada':    { who: 'ana', condo: DATA.condo, issued: '2026-11-03T08:00:00', usedAt: '2026-11-04T10:00:00' }, // RN-165 · HU-002 C10
+    'inv-anulada':  { who: 'raul', condo: DATA.condo, issued: '2026-11-01T16:00:00', revokedAt: '2026-11-03T19:00:00' } // RN-138/139 · HU-002 C11
+  };
+  // Momento de uso (banda). Los escenarios HU-002 usan la emisión del criterio: 2026-12-01T10:00:00-05:00
+  const HU_ISSUED = '2026-12-01T10:00:00';
+  const MOMENTS = {
+    sim:  { label: `Hora simulada del prototipo (${fmtDate(TODAY)} ${NOW})` },
+    c1:   { label: 'HU-002 C1 · emitida 01/12/2026 10:00:00, usada 05/12/2026 10:00:00', open: '2026-12-05T10:00:00' },
+    c6:   { label: 'HU-002 C6 · usada 08/12/2026 10:00:00 (604,800 s exactos → vigente)', open: '2026-12-08T10:00:00' },
+    c2:   { label: 'HU-002 C2 · usada 08/12/2026 10:00:01 (604,801 s → vencida)', open: '2026-12-08T10:00:01' },
+    race: { label: 'Abre 08/12/2026 09:59:30 y envía 10:00:01 (vence mientras escribe)', open: '2026-12-08T09:59:30', submit: '2026-12-08T10:00:01' }
+  };
+  const USED_KEY = 'invitations-used-v1';                      // tokens aceptados en esta sesión (RN-165)
+  const usedMap = () => { try { return JSON.parse(store.get(USED_KEY)) || {}; } catch (e) { return {}; } };
+
+  const qp = CH.params();
+  const token = qp.get('token');
+  const tokenInv = token ? INVITES[token] || null : null;
+  let moment = 'sim';
+  let status = null;          // resultado del último envío: { kind:'pwd', code } | { kind:'inv', code }
+  let focusPwd = true;
+
+  const secs = (a, b) => Math.round((Date.parse(b + '-05:00') - Date.parse(a + '-05:00')) / 1000);
+  const fmtStamp = s => fmtDate(s.slice(0, 10)) + ' ' + s.slice(11, 19);
+  const num = n => n.toLocaleString('en-US');
+
+  // Invitación vigente en pantalla: la del token si coincide con la persona; si no, una invitación vigente de demo de esa persona
+  function invite(c) {
+    const base = tokenInv && tokenInv.who === c.roleKey ? tokenInv : { who: c.roleKey, condo: DATA.condo, issued: '2026-11-01T09:00:00' };
+    const inv = Object.assign({ email: EMAIL[base.who], role: ROLE_OF[base.who] }, base);
+    const m = MOMENTS[moment];
+    inv.openAt = m.open || SIM_NOW;
+    inv.submitAt = m.submit || inv.openAt;
+    if (m.open) inv.issued = HU_ISSUED;
+    inv.elapsed = secs(inv.issued, inv.openAt);
+    const used = usedMap();
+    if (!inv.usedAt && token && used[token] && tokenInv === base) inv.usedAt = used[token];
+    return inv;
+  }
+  // Estado que corresponde al abrir el enlace (GET)
+  function derive(c) {
+    const inv = invite(c);
+    if (inv.revokedAt) return 'revoked';
+    if (inv.usedAt) return 'used';
+    if (inv.elapsed > VALIDITY) return 'expired';
+    if (inv.existing) return 'existing';
+    return 'form';
+  }
+
+  function intro(inv) {
+    return `<p style="margin:0">Te invitaron a ${esc(inv.condo)} como ${ROLE_TEXT[inv.role]}.</p>`;
+  }
+
+  function invalidView(c, code, afterSubmit) {
+    c.title = 'Invitación no válida';
+    const inv = invite(c);
+    const why = { INVITATION_EXPIRED: `RN-110 · emitida ${fmtStamp(inv.issued)}, ${num(inv.elapsed)} s > 604,800 s`,
+                  INVITATION_ALREADY_USED: `RN-165 · aceptada el ${inv.usedAt ? fmtStamp(inv.usedAt) : '—'} · no crea ni une ninguna cuenta`,
+                  INVITATION_REVOKED: `RN-138/RN-139 · anulada el ${inv.revokedAt ? fmtStamp(inv.revokedAt) : '03/11/2026'} al revocarse el rol de quien la emitió o recibió` }[code];
+    return `<h1 class="page">Invitación no válida</h1>
+      ${alert('danger', MSG[code], `<p><a href="#" data-go="P-001">Ir a iniciar sesión</a></p>${rn(code + ' · 422 · sin formulario · ' + why)}`, afterSubmit ? 'alert' : '')}
+      <div class="inv-notes">${rn('RN-165 (reajustada 2026-11-08) · cada código tiene su propio texto de §3.0.6: INVITATION_EXPIRED "venció", INVITATION_ALREADY_USED "ya no es válida", INVITATION_REVOKED "fue anulada" · los tres describen solo el estado del enlace y no revelan si existe una cuenta con ese correo (RN-153)')}${rn('h1 provisional: la ficha de P-006 no define el título de este estado')}</div>`;
+  }
+
+  function existingView(c) {
+    const t = token && tokenInv && tokenInv.existing ? token : 'k9F2xQ7mTb';
+    const inv = Object.assign(invite(c), { condo: INVITES['k9F2xQ7mTb'].condo });   // la invitación viene de otro condominio
+    c.title = 'Acepta la invitación';
+    return `<h1 class="page">Acepta la invitación</h1>
+      ${intro(inv)}
+      ${alert('info', 'Ya tienes una cuenta en CondoHub con este correo. Inicia sesión para aceptar la invitación.',
+        rn('RN-122 · sin formulario · no se crea una segunda cuenta · HU-002 C12'))}
+      <button class="btn btn-primary btn-full" type="button" data-signin="${esc(t)}">Iniciar sesión</button>
+      <div class="inv-notes">${rn('→ P-001 con returnUrl=/invitations/' + esc(t))}${rn('h1 provisional: la ficha no lo define')}</div>`;
+  }
+
+  // Provisional: Ana vuelve de P-001 con la sesión iniciada (returnUrl). La ficha de P-006 no define esta vista.
+  function joinedView(c) {
+    const inv = Object.assign(invite(c), { condo: INVITES['k9F2xQ7mTb'].condo });
+    c.title = 'Invitación aceptada';
+    return `<h1 class="page">Invitación aceptada</h1>
+      ${alert('success', `Agregamos ${esc(inv.condo)} a tu cuenta.`, `<p>Lo verás al elegir el condominio cuando inicies sesión.</p>`, 'status')}
+      <a href="#" class="btn btn-primary btn-full" data-go="P-005">Continuar</a>
+      <div class="inv-notes">${rn('PROVISIONAL · RN-122: el condominio se agrega al selector (RN-064); consentimiento propio antes de usarlo (RN-010)')}
+        ${rn('Gap: 09-ui-spec no define qué ve la persona al volver con sesión iniciada')}</div>`;
+  }
+
+  function formView(c) {
+    const st = c.state, inv = invite(c);
+    const pwdErr = status && status.kind === 'pwd' ? status.code : (st === 'length' ? 'PASSWORD_LENGTH_INVALID' : st === 'breached' ? 'PASSWORD_BREACHED' : null);
+    const busy = st === 'loading';
+    c.title = 'Crea tu cuenta';
+    const described = ['pwd-hint', pwdErr ? 'pwd-error' : ''].filter(Boolean).join(' ');
+    let h = `<h1 class="page">Crea tu cuenta</h1>${intro(inv)}`;
+    if (pwdErr) h += alert('danger', 'Revisa la contraseña antes de continuar',
+      `<ul><li><a href="#pwd" data-focus="pwd">${MSG[pwdErr]}</a></li></ul>` +
+      rn(pwdErr + ' · 422 · ' + (pwdErr === 'PASSWORD_BREACHED' ? 'RN-117 · lista local, sin servicios externos' : 'RN-116 · 12 a 64 caracteres') + ' · el campo vuelve vacío'), 'alert');
+    if (busy) h += `<p class="rn always">SSR: no hay estado de carga en el cliente. 🧩 JS opcional: el botón pasa a "Enviando…" (aria-disabled) para evitar dobles envíos.</p>`;
+    h += `<dl class="dl"><dt>Correo</dt><dd>${esc(inv.email)}</dd></dl>
+      <form class="form" id="activate" method="post" action="/api/invitations/${esc(token || '{token}')}/accept" novalidate>
+        <input type="hidden" name="username" value="${esc(inv.email)}" autocomplete="username">
+        <div class="field"><label for="pwd">Contraseña <span class="req">(obligatorio)</span></label>
+          <p class="hint" id="pwd-hint">Entre 12 y 64 caracteres. Puedes usar una frase, por ejemplo: mi edificio tiene piscina</p>
+          <input class="input" id="pwd" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="64" required
+            aria-describedby="${described}"${pwdErr ? ' aria-invalid="true"' : ''} value="">
+          ${pwdErr ? `<div id="pwd-error">${fieldError(MSG[pwdErr])}</div>` : ''}</div>
+        <button class="btn btn-primary" type="submit"${busy ? ' aria-disabled="true"' : ''}>${busy ? 'Enviando…' : 'Crear mi cuenta'}</button>
+      </form>
+      <div class="inv-notes">${rn('RN-116 · sin reglas de composición')}${rn('RN-117 · lista local de filtradas')}${rn('RN-009 · hash Argon2id m≥64 MiB, t≥3, p≥1 (servidor)')}
+        ${rn('RN-110 · vence a los 604,800 s: emitida ' + fmtStamp(inv.issued) + ' · transcurridos ' + num(inv.elapsed) + ' s')}${rn('RN-007 · no hay registro público')}${rn('Éxito → P-007')}</div>`;
+    return h;
+  }
+
+  function errorView() {
+    return `<div class="page-state">${ICON.big}<h1 class="page">Algo salió mal</h1>
+      <p style="margin:0">Algo salió mal. Inténtalo de nuevo en unos minutos.</p>
+      <p class="muted">Si el problema continúa, comparte este código con la administración: <span class="trace">00-9d2e41b07c5a4e3f8b6a1d2c3e4f5a6b-1c2d3e4f5a6b7c8d-01</span></p>
+      <button class="btn btn-primary" type="button" data-retry>Volver a intentar</button>${rn('§3.0.4 · error inesperado 500 con traceId')}</div>`;
+  }
+
+  function view(c) {
+    const st = c.state;
+    if (st === 'error') { c.title = 'Algo salió mal'; return errorView(); }
+    if (status && status.kind === 'inv') return invalidView(c, status.code, true);
+    if (STATE_CODE[st]) return invalidView(c, STATE_CODE[st], false);
+    if (st === 'existing') return existingView(c);
+    if (st === 'joined') return joinedView(c);
+    return formView(c);
+  }
+
+  // Envío (simula POST /api/invitations/{token}/accept)
+  function attempt(btn, pwd) {
+    const inv = invite(ctx);
+    const reset = () => { btn.removeAttribute('aria-disabled'); btn.textContent = 'Crear mi cuenta'; };
+    // La invitación se vuelve a validar al enviar (RN-110, RN-165)
+    if (secs(inv.issued, inv.submitAt) > VALIDITY) { status = { kind: 'inv', code: 'INVITATION_EXPIRED' }; return ctx.rerender(); }
+    if (inv.usedAt) { status = { kind: 'inv', code: 'INVITATION_ALREADY_USED' }; return ctx.rerender(); }
+    const n = len(pwd);
+    if (n < 12 || n > 64) { status = { kind: 'pwd', code: 'PASSWORD_LENGTH_INVALID' }; focusPwd = false; return ctx.rerender(); }
+    if (BREACHED.includes(pwd.toLowerCase())) { status = { kind: 'pwd', code: 'PASSWORD_BREACHED' }; focusPwd = false; return ctx.rerender(); }
+    status = null; reset();
+    if (token) { const u = usedMap(); u[token] = inv.submitAt; store.set(USED_KEY, JSON.stringify(u)); }   // RN-165: un solo uso
+    CH.go('P-007');                                                                                         // role = persona invitada
+  }
+
+  // Con token: la persona y el estado inicial salen del token (antes de CH.init, que lee ?role= y ?state=)
+  let joined = false;
+  if (tokenInv) {
+    joined = tokenInv.existing && qp.has('role') && !qp.has('state') && qp.get('role') === tokenInv.who;   // vuelve de P-001 con sesión
+    if (!qp.has('state')) {
+      qp.set('role', tokenInv.who);
+      qp.set('state', joined ? 'joined' : (tokenInv.revokedAt ? 'revoked' : tokenInv.usedAt || usedMap()[token] ? 'used'
+        : secs(tokenInv.issued, SIM_NOW) > VALIDITY ? 'expired' : tokenInv.existing ? 'existing' : 'form'));
+      try { history.replaceState(null, '', location.pathname + '?' + qp); } catch (e) { }
+    }
+  }
+
+  const SAMPLE_BASE = 'mi edificio de Los Olivos tiene piscina, parrilla y salón de fiestas para todos';
+  const SAMPLES = [
+    ['LosOlivos-2026', '14 caracteres · C1'], ['edificio202', '11 · C3'], ['edificio2026', '12 · C7'],
+    [SAMPLE_BASE.slice(0, 64), '64 · C8'], [SAMPLE_BASE.slice(0, 65), '65 · C4'],
+    ['password1234', 'password1234 (filtrada) · C5'], ['mi edificio tiene piscina', 'mi edificio tiene piscina · C9']
+  ];
+
+  const ctx = CH.init({
+    code: 'P-006', title: 'Activar cuenta por invitación', shell: 'auth', roleLabel: 'Persona invitada',
+    roles: ['carla', 'luis', 'ana', 'raul'],
+    states: [['form', 'Invitación vigente'], ['length', 'PASSWORD_LENGTH_INVALID'], ['breached', 'PASSWORD_BREACHED'],
+             ['expired', 'INVITATION_EXPIRED'], ['used', 'INVITATION_ALREADY_USED'], ['revoked', 'INVITATION_REVOKED'],
+             ['existing', 'Cuenta existente (RN-122)'], ['joined', 'Vuelve con sesión (provisional)'], ['loading', 'Cargando'], ['error', 'Error']],
+    route: () => '/invitations/' + (token || '{token}'),
+    extraControls: `<div class="proto-x"><label for="moment">Momento de uso de la invitación (RN-110)</label>
+        <select id="moment">${Object.keys(MOMENTS).map(k => `<option value="${k}">${MOMENTS[k].label}</option>`).join('')}</select></div>
+      <div class="proto-x"><label for="tok">Enlace de invitación (?token=)</label>
+        <select id="tok"><option value="">Sin token: manda el selector de estados</option>
+          <option value="inv-carla-ok">inv-carla-ok · Carla, vigente</option>
+          <option value="inv-luis-ok">inv-luis-ok · Luis, propietario no residente, vigente</option>
+          <option value="k9F2xQ7mTb">k9F2xQ7mTb · Ana, ya tiene cuenta (Torres del Parque)</option>
+          <option value="inv-vencida">inv-vencida · emitida 28/10/2026 10:29:59</option>
+          <option value="inv-usada">inv-usada · aceptada hoy 10:00</option>
+          <option value="inv-anulada">inv-anulada · Raúl, Portería</option></select></div>
+      <div class="proto-actions"><span>Escribir en la contraseña:</span>${SAMPLES.map(([v, t], i) => `<button class="proto-btn" type="button" data-sample="${i}">${esc(t)}</button>`).join('')}</div>
+      <p class="proto-info" id="sim-info"></p>`,
+    render: view,
+    afterRender(c) {
+      info(c);
+      if (focusPwd && ['form', 'length', 'breached'].includes(c.state) && !status) { const el = document.getElementById('pwd'); if (el) el.focus(); }
+      focusPwd = false;
+    }
+  });
+  document.getElementById('tok').value = token && INVITES[token] ? token : '';
+
+  function info(c) {
+    const el = document.getElementById('sim-info'); if (!el) return;
+    const inv = invite(c || ctx), pwd = document.getElementById('pwd');
+    el.innerHTML = `Invitación: <b>${esc(inv.email)}</b> · emitida <b>${fmtStamp(inv.issued)}</b> · se abre <b>${fmtStamp(inv.openAt)}</b>` +
+      (inv.submitAt !== inv.openAt ? ` · se envía <b>${fmtStamp(inv.submitAt)}</b>` : '') +
+      ` · transcurridos <b>${num(inv.elapsed)} s</b> (vence con más de 604,800 s).` +
+      (pwd ? ` Caracteres en el campo: <b id="pwd-count">${len(pwd.value)}</b> (el campo tiene maxlength=64: los botones de arriba lo saltan para simular un envío directo a la API).` : '') +
+      ` Filtradas de la lista local: ${BREACHED.map(esc).join(', ')}.`;
+  }
+
+  // Aplica el estado que corresponde al abrir el enlace con el momento elegido
+  function applyDerived() {
+    const st = derive(ctx);
+    const r = document.getElementById('ch-st-' + st); if (r) r.checked = true;
+    ctx.state = st; status = null; focusPwd = true; ctx.rerender();
+  }
+
+  document.addEventListener('submit', e => {
+    const f = e.target.closest('#activate'); if (!f) return;
+    e.preventDefault();
+    const btn = f.querySelector('button[type="submit"]');
+    if (btn.getAttribute('aria-disabled') === 'true') return;
+    const pwd = f.password.value;
+    CH.sending(btn, 700, () => attempt(btn, pwd));
+  });
+
+  document.addEventListener('click', e => {
+    const t = e.target;
+    const fl = t.closest('[data-focus]');
+    if (fl) { e.preventDefault(); const el = document.getElementById(fl.dataset.focus); if (el) el.focus(); return; }
+    const si = t.closest('[data-signin]');
+    if (si) { CH.go('P-001', 'returnUrl=' + encodeURIComponent('/invitations/' + si.dataset.signin)); return; }
+    const sm = t.closest('[data-sample]');
+    if (sm) {
+      const el = document.getElementById('pwd'); if (!el) return;
+      el.value = SAMPLES[Number(sm.dataset.sample)][0]; el.type = 'text';     // visible para la demo
+      info(); document.querySelector('#activate button').focus(); return;
+    }
+    if (t.closest('[data-retry]')) { document.getElementById('ch-st-form').checked = true; ctx.state = 'form'; status = null; focusPwd = true; ctx.rerender(true); }
+    if (t.closest('[data-ch-reset]')) store.set(USED_KEY, '');                // "Reiniciar datos" también olvida las invitaciones usadas
+  }, true);
+
+  document.addEventListener('input', e => { if (e.target.id === 'pwd') { const n = document.getElementById('pwd-count'); if (n) n.textContent = len(e.target.value); } });
+  document.addEventListener('change', e => {
+    const t = e.target;
+    if (t.id === 'ch-role' || t.name === 'ch-st') { status = null; focusPwd = true; }
+    if (t.id === 'moment') { moment = t.value; applyDerived(); }
+    if (t.id === 'tok') { location.href = 'P-006-activar-cuenta.html' + (t.value ? '?token=' + encodeURIComponent(t.value) : ''); }
+  }, true);
+})();
+</script>
+</body>
+</html>

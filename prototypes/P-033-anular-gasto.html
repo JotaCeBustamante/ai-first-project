@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Anular gasto · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.head{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3)}
+.amount{font-size:1.5rem;line-height:1.3;font-weight:700}
+.amount.is-void{color:var(--color-text-muted)}
+.void-note{display:block;color:var(--color-danger);font-weight:600;font-size:1rem}
+.reason{margin:var(--space-1) 0 0;overflow-wrap:anywhere}
+.file{display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap;margin:0}
+.file svg{flex:none;color:var(--color-text-muted);width:32px;height:32px}
+.file b{overflow-wrap:anywhere}
+.btn-danger-secondary{background:var(--color-surface);color:var(--color-danger);border-color:var(--color-danger)}
+.btn-danger-secondary:hover{background:var(--color-danger-subtle)}
+.hire-row{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center}
+.locked{display:flex;gap:var(--space-3);align-items:flex-start;color:var(--color-text-muted);margin:0}
+.locked svg{flex:none;margin-top:2px}
+.proto-x{margin-top:var(--space-2);display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:flex-end}
+/* ConfirmPage: AppShell con contenido de máx. 32 rem (09-ui-spec.md P-033) */
+.content.confirm{max-width:32rem;gap:var(--space-6)}
+.sum{display:flex;flex-direction:column;gap:var(--space-2)}
+.sum p{margin:0}
+.sum-title{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:var(--space-2)}
+.sum-title strong{font-size:1.125rem}
+.consequence{margin:0}
+.confirm-actions{display:flex;flex-direction:column;gap:var(--space-3)}
+.confirm-form{display:flex;flex-direction:column;gap:var(--space-6);margin:0}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script src="assets/expenses-data.js"></script>
+<script>
+// P-033 · Anular gasto — 09-ui-spec.md §3.5 (P-033, ConfirmPage) y flujo F6 (pasos 3–4). HU-010B.
+// Reglas: RN-092 (motivo obligatorio; solo espacios = vacío; fecha-hora ISO 8601), RN-167 (no se anula dos veces y se conserva
+// la primera anulación), RN-142 (deja de sumar), RN-091 (EXPENSE_IMMUTABLE ante PATCH/DELETE), RN-103 (404 antes que 403).
+// La fecha-hora de anulación es CH.nowStamp() (CH.TODAY + CH.NOW): HU-010B C3 con ?today=2026-11-21&now=09:00.
+// Datos: assets/expenses-data.js. Tras el éxito → CH.go('P-031', 'id=…&arrive=voided'); si ya estaba anulado, arrive=already.
+(function () {
+  const { DATA, ICON, TODAY, NOW, esc, fmtDate, money, rn, alert, fieldError } = CH;
+
+  const { CAT, monthLabel } = EXP;
+
+  // ---------- Propio de P-033 ----------
+  // Sin ?id: "Limpieza de cisterna" (e-1104, o el gasto de P-032 que la registró) si existe y está vigente a la fecha simulada
+  // (20/11 16:00 a 21/11 09:00); si no, e-1102, registrado el 03/11/2026.
+  const DEFAULT_IDS = ['e-1104', 'e-1102'];
+  // HU-010B C8: un gasto ya anulado (la cisterna desde el 21/11 09:01; con el hoy por defecto, e-1009 anulado el 19/10)
+  const STALE_IDS = ['e-1104', 'e-1009'];
+  const qId = CH.params().get('id');
+  const pickId = c => {
+    if (c.state === 'stale') { const x = EXP.firstOf(STALE_IDS, e => e.voided); return x ? x.id : STALE_IDS[1]; }
+    if (qId) return EXP.resolve(qId);
+    const x = EXP.firstOf(DEFAULT_IDS, e => !e.voided); return x ? x.id : DEFAULT_IDS[1];
+  };
+  const MSG = {
+    REQUIRED: 'Escribe el motivo de la anulación.',
+    ALREADY: 'Este gasto ya estaba anulado.',
+    IMMUTABLE: 'Un gasto registrado no se puede editar ni borrar. Si tiene un error, anúlalo y regístralo de nuevo.'
+  };
+  const $id = id => document.getElementById(id);
+  const minus = (hhmm, n) => { const [h, m] = hhmm.split(':').map(Number); const x = Math.max(0, h * 60 + m - n); return String(Math.floor(x / 60)).padStart(2, '0') + ':' + String(x % 60).padStart(2, '0'); };
+
+  function setup(c) {
+    const d = c.data;
+    if (d.init) return d;
+    d.init = true; d.errors = null; d.fatal = false; d.immutable = null;
+    d.id = pickId(c);
+    d.e = c.state === 'notfound' ? null : EXP.get(d.id);
+    d.reason = '';
+    if (c.state === 'invalid') { d.errors = [MSG.REQUIRED]; }
+    if (c.state === 'spaces') { d.reason = '   '; d.errors = [MSG.REQUIRED]; }
+    return d;
+  }
+
+
+  function summary(e) {
+    return `<section class="card sum" aria-label="Gasto">
+      <p class="sum-title"><strong>${esc(e.desc)}</strong><strong class="tnum">${money(e.amount)}</strong></p>
+      <p class="tnum"><time datetime="${e.date}">${fmtDate(e.date)}</time> · ${esc(e.sup)}</p>
+      <p class="muted">${CAT[e.cat]} · registrado el <time datetime="${e.reg}" class="tnum">${fmtDate(e.reg)}</time></p></section>`;
+  }
+
+  function confirmView(c, d) {
+    const e = d.e, m = e.date.slice(0, 7);
+    c.title = 'Anular gasto';
+    let h = `<div><nav class="crumbs" aria-label="Migas"><ol>
+        <li><a href="#" data-go="P-030" data-params="month=${m}">Gastos de ${monthLabel(e.date)}</a></li>
+        <li><a href="#" data-go="P-031" data-params="id=${esc(e.id)}">${esc(e.desc)}</a></li><li aria-current="page">Anular</li></ol></nav>
+      <a href="#" class="back" data-go="P-031" data-params="id=${esc(e.id)}">← ${esc(e.desc)}</a>
+      <h1 class="page">Anular gasto</h1>${rn('🔒 Solo Administrator · ConfirmPage sin confirm() ni modal (§3.0.3)')}</div>`;
+
+    if (d.immutable)
+      h += alert('danger', MSG.IMMUTABLE, `<p>El gasto sigue registrado por ${money(e.amount)}${d.immutable === 'delete' ? ' y sigue en el detalle del mes' : ''}.</p>`, 'alert') +
+        rn(`EXPENSE_IMMUTABLE · 422 · RN-091 · ${d.immutable === 'delete' ? 'DELETE' : 'PATCH { amount: 1000.00 }'} directo a /api/expenses/${e.id}: la UI no tiene Editar ni Borrar`);
+    if (d.errors)
+      h += alert('danger', 'No pudimos anular el gasto', `<p>Corrige este dato:</p><ul><li><a href="#f-reason" data-focus="f-reason">${MSG.REQUIRED}</a></li></ul>
+        ${rn('EXPENSE_VOID_REASON_REQUIRED · 422 · RN-092 · el motivo se valida sin espacios al inicio y al final')}`, 'alert');
+    if (c.state === 'stale')
+      h += `<p class="rn always">Pestaña abierta antes de la primera anulación (HU-010B C8): el resumen se ve vigente, pero el gasto ya se anuló el ${fmtDate(e.void.at.slice(0, 10))} ${e.void.at.slice(11)}.</p>`;
+
+    h += summary(e);
+    h += `<p class="consequence">El gasto seguirá visible para los propietarios como anulado, con este motivo. Dejará de sumar en los totales. No se puede deshacer.</p>
+      ${rn('RN-142 · sigue visible y no suma · RN-092 · lo ve quien cumple CanViewCondominiumFinancials')}`;
+
+    const inv = d.errors ? ' aria-invalid="true" aria-describedby="f-reason-err"' : '';
+    h += `<form class="confirm-form" method="post" action="/api/expenses/${esc(e.id)}/void" id="void-form" novalidate>
+        <div class="field"><label for="f-reason">Motivo de la anulación <span class="req">(obligatorio)</span></label>
+          <textarea class="textarea" id="f-reason" name="reason" rows="4" maxlength="500"${inv}>${esc(d.reason)}</textarea>
+          ${d.errors ? `<div id="f-reason-err">${fieldError(MSG.REQUIRED)}</div>` : ''}</div>
+        <div class="confirm-actions">
+          <button class="btn btn-danger btn-block" type="submit" id="void-btn">Anular gasto</button>
+          <a href="#" class="btn btn-secondary btn-block" data-go="P-031" data-params="id=${esc(e.id)}">Volver</a></div>
+      </form>
+      ${rn('RN-092 · POST /api/expenses/' + esc(e.id) + '/void → voidedAt = ' + CH.nowStamp() + ':00-05:00 (CH.TODAY + CH.NOW)')}`;
+    return `<div class="content confirm">${h}</div>`;
+  }
+
+  function alreadyView(e) {
+    return `<div class="content confirm"><h1 class="page">Anular gasto</h1>${alert('danger', MSG.ALREADY, `<p>Se conservan el motivo y la fecha-hora de la primera anulación. <a href="#" data-go="P-031" data-params="id=${esc(e.id)}&amp;arrive=already">Ver el gasto →</a></p>`, 'alert')}
+      ${rn('EXPENSE_ALREADY_VOIDED · 422 · RN-167 · → P-031 con el error (redirige)')}</div>`;
+  }
+
+  const opt = (v, t) => `<option value="${v}">${t}</option>`;
+  const ctx = CH.init({
+    code: 'P-033', title: 'Anular gasto', active: 'P-030',
+    roles: ['rosa', 'marco', 'ana'],
+    states: [['data', 'Con datos'], ['invalid', 'Motivo vacío (C2)'], ['spaces', 'Motivo solo espacios (C7)'], ['stale', 'Ya anulado en otra pestaña (C8)'],
+             ['notfound', 'No encontrado (404)'], ['loading', 'Cargando'], ['error', 'Error']],
+    extraControls: EXP.scenarioControls() + `<div class="proto-x"><div><label for="outcome">Al pulsar "Anular gasto", el servidor responde</label><select id="outcome">
+        ${opt('ok', '200 · anulado (o 422 si falta el motivo)')}${opt('already', '422 · otra sesión lo anuló un momento antes (EXPENSE_ALREADY_VOIDED)')}${opt('error', '500 · error inesperado')}</select></div>
+      <button class="proto-btn" type="button" id="try-patch">PATCH monto a S/ 1,000.00 (C1)</button>
+      <button class="proto-btn" type="button" id="try-delete">DELETE del gasto (C5)</button></div>`,
+    route: c => `/expenses/${c.state === 'notfound' ? 'e-9999' : pickId(c)}/void`,
+    render(c) {
+      if (c.state === 'loading') return CH.loadingView('SSR: el servidor entrega la ConfirmPage completa. Al pulsar "Anular gasto" el botón pasa a "Enviando…" (🧩 JS opcional).');
+      const d = setup(c);
+      if (c.state === 'error' || d.fatal) { c.title = 'Algo salió mal'; return CH.errorView(); }
+      if (!d.e) return EXP.notFoundView(c);                                     // RN-103: 404 antes que 403
+      // HU-010B C9: Marco (BoardMember) → 403 y el gasto sigue vigente
+      if (!c.persona.admin) { c.title = 'No tienes acceso a esta página'; return CH.deniedView(); }
+      // Gasto ya anulado abierto por URL (HU-010B C8 el 23/11): el servidor no ofrece anularlo de nuevo → P-031 con el error
+      if (d.e.voided && c.state !== 'stale') { c.title = 'Anular gasto'; return alreadyView(d.e); }
+      return confirmView(c, d);
+    },
+    afterRender(c) {
+      const h = document.getElementById('nf-h1'); if (h) h.focus();
+      // GET de un gasto ya anulado (Administrator): Post/Redirect/Get a P-031 con el error, como el POST
+      const d = c.data;
+      if (d.e && d.e.voided && c.state !== 'stale' && c.persona.admin && !['loading', 'error', 'notfound'].includes(c.state) && !d.redirected) {
+        d.redirected = true; CH.go('P-031', `id=${d.e.id}&arrive=already`);
+      }
+    }
+  });
+
+  // ---------- Interacciones ----------
+  function submitVoid() {
+    const d = ctx.data, reason = $id('f-reason').value;
+    d.reason = reason; d.immutable = null;
+    let outcome = $id('outcome').value;
+    CH.sending($id('void-btn'), 800, () => {
+      if (outcome === 'error') { d.fatal = true; ctx.rerender(); return; }
+      if (!reason.trim()) { d.errors = [MSG.REQUIRED]; ctx.rerender(); return; }   // RN-092: trim
+      d.errors = null;
+      const cur = EXP.get(d.id);
+      // RN-167: se conserva la primera anulación → P-031 con EXPENSE_ALREADY_VOIDED
+      if (cur.voided) { CH.go('P-031', `id=${cur.id}&arrive=already`); return; }
+      if (outcome === 'already') {
+        // Carrera: otra sesión de la administración lo anuló 2 minutos antes (nunca antes del registro); se guarda esa, no la nueva
+        let at = TODAY + 'T' + minus(NOW, 2); if (at < cur.regAt) at = cur.regAt;
+        EXP.patch(cur.id, { voided: true, void: { at, reason: 'Registro duplicado' } });
+        CH.go('P-031', `id=${cur.id}&arrive=already`); return;
+      }
+      EXP.patch(cur.id, { voided: true, void: { at: CH.nowStamp(), reason: reason.trim() } });
+      CH.go('P-031', `id=${cur.id}&arrive=voided`);
+    });
+  }
+
+  document.addEventListener('submit', ev => { if (ev.target.id === 'void-form') { ev.preventDefault(); submitVoid(); } });
+  document.addEventListener('click', ev => {
+    const fl = ev.target.closest('[data-focus]');
+    if (fl) { ev.preventDefault(); const el = $id(fl.dataset.focus); if (el) el.focus(); return; }
+    if (ev.target.id === 'try-patch' || ev.target.id === 'try-delete') {
+      const d = ctx.data;
+      if (!$id('void-form')) return;                       // solo con la ConfirmPage a la vista (Administrator, gasto vigente)
+      d.reason = $id('f-reason').value; d.errors = null;
+      d.immutable = ev.target.id === 'try-delete' ? 'delete' : 'patch';
+      ctx.rerender();
+    }
+  });
+})();
+</script>
+</body>
+</html>

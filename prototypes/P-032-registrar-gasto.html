@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Registrar gasto · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.head{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3)}
+.amount{font-size:1.5rem;line-height:1.3;font-weight:700}
+.amount.is-void{color:var(--color-text-muted)}
+.void-note{display:block;color:var(--color-danger);font-weight:600;font-size:1rem}
+.reason{margin:var(--space-1) 0 0;overflow-wrap:anywhere}
+.file{display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap;margin:0}
+.file svg{flex:none;color:var(--color-text-muted);width:32px;height:32px}
+.file b{overflow-wrap:anywhere}
+.btn-danger-secondary{background:var(--color-surface);color:var(--color-danger);border-color:var(--color-danger)}
+.btn-danger-secondary:hover{background:var(--color-danger-subtle)}
+.hire-row{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center}
+.locked{display:flex;gap:var(--space-3);align-items:flex-start;color:var(--color-text-muted);margin:0}
+.locked svg{flex:none;margin-top:2px}
+.proto-x{margin-top:var(--space-2);display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:flex-end}
+/* P-032 */
+.form-card{display:flex;flex-direction:column;gap:var(--space-6)}
+.prefix .input{max-width:14rem}
+.chosen{margin:var(--space-1) 0 0;font-weight:600;overflow-wrap:anywhere}
+.submit{display:flex;flex-direction:column;gap:var(--space-3)}
+.btn-full{width:100%}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script src="assets/expenses-data.js"></script>
+<script>
+// P-032 · Registrar gasto — 09-ui-spec.md §3.5 (P-032) y flujo F6 (pasos 1, 2 y 2a). HU-010.
+// Reglas: RN-032 (solo Administrator), RN-033 ⚠️ Q28 (comprobante obligatorio), RN-034 (monto > 0), RN-093 (hasta 2 decimales,
+// se guarda con 2), RN-094 (fecha entre hoy − 12 meses y hoy), RN-036 (sin unidades ni personas), RN-106, RN-166 (si falla la carga
+// no se guarda), RN-163/ADR-0014 (Idempotency-Key), RN-172 (FIELD_REQUIRED), RN-173 (AMOUNT_INVALID_FORMAT).
+// Hoy = CH.TODAY (04/11/2026; ?today=2026-11-20 reproduce las fechas de HU-010), hora CH.NOW. Datos: assets/expenses-data.js.
+// Tras el 201 → CH.go('P-031', 'id=…&arrive=registered') (Post/Redirect/Get); el gasto queda en 'ch:exp-session-v1'.
+(function () {
+  const { DATA, ICON, TODAY, NOW, esc, fmtDate, money, rn, alert, fieldError } = CH;
+
+  const { CATS, RUC, kbText } = EXP;
+
+  // ---------- Propio de P-032 ----------
+  const MAX_KB = 10 * 1024;                                    // ⚠️ Q28: PDF, JPG o PNG, máx. 10 MB (provisional)
+  const EXT_OK = ['pdf', 'jpg', 'jpeg', 'png'];
+  const addDays = (iso, n) => { const [y, m, d] = iso.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10); };
+  const addMonths = (iso, n) => { const [y, m, d] = iso.split('-').map(Number); return new Date(Date.UTC(y, m - 1 + n, d)).toISOString().slice(0, 10); };
+  const MIN_DATE = addMonths(TODAY, -12);                      // RN-094: hoy − 12 meses (04/11/2025) es válido
+  const isoDate = s => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
+  const SUPPLIERS = Object.keys(RUC).sort((a, b) => a.localeCompare(b, 'es'));   // GET /api/vendors, por razón social
+  const FIELD_ORDER = ['f-desc', 'f-amount', 'f-date', 'f-cat', 'f-sup', 'f-file'];
+  const SIMFILES = {
+    pdf: { name: 'factura-F001-0458.pdf', kb: 180 },
+    jpg: { name: 'boleta-B002-1201.jpg', kb: 412 },
+    big: { name: 'factura-escaneada-F001-0458.pdf', kb: 14541 },
+    heic: { name: 'foto-comprobante.heic', kb: 2150 }
+  };
+  const $id = id => document.getElementById(id);
+  function uuid7() {
+    const h = Date.now().toString(16).padStart(12, '0');
+    const r = n => Array.from({ length: n }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-7${r(3)}-${'89ab'[Math.floor(Math.random() * 4)]}${r(3)}-${r(12)}`;
+  }
+
+  // Ejemplos de HU-010, relativos a CH.TODAY. Con ?today=2026-11-20 (el "hoy" de la HU) las fechas son exactamente las de la HU;
+  // con otro hoy se trasladan los mismos días.
+  const HU_DAY = TODAY === '2026-11-20';
+  const BASE_EX = { desc: 'Limpieza de cisterna', amount: '1200.00', date: addDays(TODAY, -12), cat: 'Cleaning', sup: 'Hidroclean SAC', file: 'pdf' };
+  const EXAMPLES = {
+    C1: ['C1 · válido: Limpieza de cisterna S/ 1,200.00 · fecha ' + fmtDate(addDays(TODAY, -12)) + (HU_DAY ? '' : ' (la HU usa 08/11/2026: abre con ?today=2026-11-20)'), {}],
+    C2: ['C2 · sin adjunto → EXPENSE_RECEIPT_REQUIRED', { file: '' }],
+    C3: ['C3 · monto 0.00 → EXPENSE_AMOUNT_NOT_POSITIVE', { amount: '0.00' }],
+    C4: ['C4 · monto 1200.505 → AMOUNT_INVALID_PRECISION', { amount: '1200.505' }],
+    F1: ['RN-173 · monto 1,200.50 → AMOUNT_INVALID_FORMAT', { amount: '1,200.50' }],
+    F2: ['RN-172 · sin descripción ni categoría → FIELD_REQUIRED', { desc: '', cat: '' }],
+    C5: ['C5 · fecha futura ' + fmtDate(addDays(TODAY, 5)) + ' → EXPENSE_DATE_OUT_OF_RANGE', { date: addDays(TODAY, 5) }],
+    C6: ['C6 · fecha ' + fmtDate(addDays(MIN_DATE, -10)) + ' (más de 12 meses) → EXPENSE_DATE_OUT_OF_RANGE', { date: addDays(MIN_DATE, -10) }],
+    C8: ['C8 · borde: S/ 0.01 → se registra', { amount: '0.01' }],
+    C9: ['C9 · borde: 1200.5 → se registra por S/ 1,200.50', { amount: '1200.5' }],
+    C10: ['C10 · monto -350.00 → EXPENSE_AMOUNT_NOT_POSITIVE', { amount: '-350.00' }],
+    C11: ['C11 · borde: fecha de hoy ' + fmtDate(TODAY) + ' → se registra', { date: TODAY }],
+    C12: ['C12 · borde: exactamente 12 meses atrás ' + fmtDate(MIN_DATE) + ' → se registra', { date: MIN_DATE }],
+    C13: ['C13 · borde: 12 meses y 1 día ' + fmtDate(addDays(MIN_DATE, -1)) + ' → EXPENSE_DATE_OUT_OF_RANGE', { date: addDays(MIN_DATE, -1) }],
+    C15: ['C15 · corte de red durante la carga (RN-166)', { outcome: 'cut' }]
+  };
+
+  // ---------- Estado inicial (GET /expenses/new) ----------
+  function setup(c) {
+    const d = c.data;
+    if (d.init) return d;
+    d.init = true; d.key = uuid7(); d.errors = null; d.cut = null; d.fatal = false; d.file = null;
+    d.f = { desc: '', amount: '', date: '', cat: '', sup: '' };
+    if (c.state === 'invalid') {
+      Object.assign(d.f, { desc: 'Limpieza de cisterna', amount: '0.00', date: addDays(TODAY, 5), cat: 'Cleaning', sup: 'Hidroclean SAC' });
+      d.errors = validate(d);
+    } else if (c.state === 'file413' || c.state === 'file415') {
+      Object.assign(d.f, { desc: 'Limpieza de cisterna', amount: '1200.00', date: addDays(TODAY, -2), cat: 'Cleaning', sup: 'Hidroclean SAC' });
+      d.file = SIMFILES[c.state === 'file413' ? 'big' : 'heic'];
+      d.errors = validate(d); d.file = null;
+    }
+    return d;
+  }
+
+  // ---------- Validación (simula al servidor; textos de §3.0.6) ----------
+  function validate(d) {
+    const f = d.f, E = [];
+    const add = (id, code, msg) => { if (!E.some(e => e.id === id)) E.push({ id, code, msg }); };
+    // RN-172: vacío o solo espacios → FIELD_REQUIRED, "Completa…" (texto) o "Elige…" (lista)
+    if (!f.desc.trim()) add('f-desc', 'FIELD_REQUIRED', 'Completa la descripción.');
+    const a = f.amount.trim();
+    if (!a) add('f-amount', 'FIELD_REQUIRED', 'Completa el monto.');
+    // RN-173: formato antes que las reglas de monto (RN-034); el signo se acepta para que -350.00 llegue a EXPENSE_AMOUNT_NOT_POSITIVE
+    else if (!/^-?\d+(\.\d+)?$/.test(a)) add('f-amount', 'AMOUNT_INVALID_FORMAT', 'Escribe el monto con números y punto decimal. Ejemplo: 1200.50');
+    else if (Number(a) <= 0) add('f-amount', 'EXPENSE_AMOUNT_NOT_POSITIVE', 'El monto debe ser mayor que S/ 0.00.');
+    else if ((a.split('.')[1] || '').length > 2) add('f-amount', 'AMOUNT_INVALID_PRECISION', 'Usa como máximo 2 decimales.');
+    if (!isoDate(f.date)) add('f-date', 'FIELD_REQUIRED', 'Completa la fecha del gasto.');
+    else if (f.date < MIN_DATE || f.date > TODAY) add('f-date', 'EXPENSE_DATE_OUT_OF_RANGE', `La fecha debe estar entre el ${fmtDate(MIN_DATE)} y hoy.`);
+    if (!f.cat) add('f-cat', 'FIELD_REQUIRED', 'Elige la categoría.');
+    if (!f.sup) add('f-sup', 'FIELD_REQUIRED', 'Elige el proveedor.');
+    const file = d.file;
+    if (!file) add('f-file', 'EXPENSE_RECEIPT_REQUIRED', 'Adjunta el comprobante del gasto.');
+    else if (!EXT_OK.includes((file.name.split('.').pop() || '').toLowerCase())) add('f-file', 'ATTACHMENT_TYPE_NOT_ALLOWED', 'Solo se aceptan archivos PDF, JPG o PNG.');
+    else if (file.kb > MAX_KB) add('f-file', 'ATTACHMENT_TOO_LARGE', 'El archivo supera 10 MB.');
+    return E;
+  }
+  const httpOf = E => E.some(e => e.code === 'ATTACHMENT_TOO_LARGE') ? '413' : E.some(e => e.code === 'ATTACHMENT_TYPE_NOT_ALLOWED') ? '415' : '422';
+
+  // ---------- Vistas ----------
+  function formView(c) {
+    const d = c.data, f = d.f, E = d.errors || [], empty = c.state === 'empty';
+    const err = id => E.find(x => x.id === id);
+    const desc = (id, ...hints) => { const ids = hints.filter(Boolean); if (err(id)) ids.push(id + '-err');
+      return (ids.length ? ` aria-describedby="${ids.join(' ')}"` : '') + (err(id) ? ' aria-invalid="true"' : ''); };
+    const fe = id => err(id) ? `<div id="${id}-err">${fieldError(esc(err(id).msg))}</div>` : '';
+    const req = '<span class="req">(obligatorio)</span>';
+    c.title = 'Registrar gasto';
+
+    let h = `<div><nav class="crumbs" aria-label="Migas"><ol><li><a href="#" data-go="P-010">Inicio</a></li><li><a href="#" data-go="P-030">Gastos del condominio</a></li><li aria-current="page">Registrar gasto</li></ol></nav>
+      <a href="#" class="back" data-go="P-030">← Gastos</a>
+      <h1 class="page">Registrar gasto</h1>${rn('🔒 Solo Administrator · RN-032 · BoardMember y propietarios → P-090 (403)')}</div>`;
+
+    if (E.length) {
+      const n = E.length;
+      h += alert('danger', 'No pudimos registrar el gasto',
+        `<p>${n === 1 ? 'Corrige este dato:' : `Corrige estos ${n} datos:`}</p>
+         <ul>${E.map(e => `<li><a href="#${e.id}" data-focus="${e.id}">${esc(e.msg)}</a></li>`).join('')}</ul>
+         ${rn(httpOf(E) + ' · ' + E.map(e => e.code).join(', ') + ' · se conservan los valores salvo el archivo · misma Idempotency-Key')}`, 'alert');
+    }
+
+    const sel = (id, name, opts, v, ph) => `<select class="select" id="${id}" name="${name}"${desc(id, id + '-hint')}><option value="">${ph}</option>${opts.map(([k, t]) => `<option value="${esc(k)}"${k === v ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
+    const sups = empty ? [] : SUPPLIERS;
+    const fileHint = 'PDF, JPG o PNG, máx. 10 MB.' + (E.length ? ' Vuelve a elegir el archivo.' : '');
+
+    h += `<form class="card form-card" method="post" action="/api/expenses" enctype="multipart/form-data" id="exp-form" novalidate>
+      <input type="hidden" name="IdempotencyKey" value="${d.key}">${rn('RN-163 · Idempotency-Key ' + d.key + ' (UUIDv7, ADR-0014) · POST multipart')}
+      <div class="field"><label for="f-desc">Descripción ${req}</label>
+        <p class="hint" id="f-desc-hint">No incluyas números de unidad ni nombres de residentes.</p>
+        <input class="input" type="text" id="f-desc" name="description" maxlength="200" autocomplete="off" value="${esc(f.desc)}"${desc('f-desc', 'f-desc-hint')}>${fe('f-desc')}
+        ${rn('RN-036 · texto libre; el control está pendiente (M-20)')}</div>
+      <div class="field"><label for="f-amount">Monto ${req}</label>
+        <p class="hint" id="f-amount-hint">Hasta 2 decimales. Ejemplo: 1200.50</p>
+        <div class="prefix"><span aria-hidden="true">S/</span><input class="input tnum" type="text" id="f-amount" name="amount" inputmode="decimal" pattern="^\\d+([.]\\d{1,2})?$" autocomplete="off" value="${esc(f.amount)}"${desc('f-amount', 'f-amount-hint')}></div>${fe('f-amount')}
+        ${rn('MoneyInput · RN-173 formato (sin coma ni separador de miles) · RN-034 monto > 0 · RN-093 hasta 2 decimales, se guarda con 2')}</div>
+      <div class="field"><label for="f-date">Fecha del gasto ${req}</label>
+        <p class="hint" id="f-date-hint">La fecha del comprobante, no la de hoy.</p>
+        <input class="input tnum" type="date" id="f-date" name="expenseDate" min="${MIN_DATE}" max="${TODAY}" value="${esc(f.date)}"${desc('f-date', 'f-date-hint')}>${fe('f-date')}
+        ${rn('RN-094 · min ' + fmtDate(MIN_DATE) + ' (hoy − 12 meses) · max ' + fmtDate(TODAY) + ' (hoy)')}</div>
+      <div class="field"><label for="f-cat">Categoría ${req}</label>
+        ${sel('f-cat', 'category', CATS, f.cat, 'Elige una categoría')}${fe('f-cat')}${rn('⚠️ Q27 · categorías provisionales del seeder')}</div>
+      <div class="field"><label for="f-sup">Proveedor ${req}</label>
+        ${sel('f-sup', 'vendorId', sups.map(s => [s, s]), f.sup, empty ? 'No hay proveedores registrados' : 'Elige un proveedor')}
+        <p class="hint" id="f-sup-hint">¿No está en la lista? <a href="#" data-sim="P-043">Registrar proveedor</a></p>${fe('f-sup')}
+        ${rn('Ordenado por razón social · F6 2a → P-043?returnUrl=/expenses/new')}</div>
+      <div class="field"><label for="f-file">Comprobante ${req}</label>
+        <p class="hint" id="f-file-hint">${fileHint}</p>
+        <input class="input" type="file" id="f-file" name="receipt" accept=".pdf,.jpg,.jpeg,.png"${desc('f-file', 'f-file-hint')}>
+        ${d.file ? `<p class="chosen tnum" id="f-file-chosen">Archivo elegido: ${esc(d.file.name)} · ${kbText(d.file.kb)}</p>` : ''}${fe('f-file')}
+        ${rn('FileInput · RN-033 obligatorio · ⚠️ Q28 formatos y tamaño · prototipo: elige un archivo real o usa "Archivo simulado" en la banda')}</div>
+      ${alert('info', 'Al registrarlo, el gasto no se puede editar ni borrar; solo anular con un motivo.', rn('RN-091 · RN-092'))}
+      <div class="submit"><button class="btn btn-primary btn-full" type="submit" id="btn-submit">Registrar gasto</button>
+        <a href="#" class="btn btn-link btn-full" data-go="P-030">Cancelar</a>
+        ${rn('RN-166 · si falla la carga del comprobante, el gasto no se guarda')}</div>
+    </form>`;
+    return `<div class="content read">${h}</div>`;
+  }
+
+  function cutView(c) {
+    const d = c.data, after = d.cut === 'after';
+    c.title = 'No se puede acceder a este sitio';
+    return `<div class="content read">
+      <p class="rn always">Simulación: página de error del propio navegador (no es de CondoHub). ${after
+        ? 'El servidor alcanzó a guardar el gasto, pero la respuesta se perdió.'
+        : `La conexión se cortó mientras se subía ${esc(d.file ? d.file.name : 'el comprobante')}: el servidor no guardó el gasto ni una copia parcial del archivo (RN-166). Gastos registrados en esta sesión: ${EXP.session().added.length} (sin cambios).`}</p>
+      <div class="dest"><h1 class="page">No se puede acceder a este sitio</h1>
+        <p style="margin:0">Se interrumpió la conexión.</p><p class="muted tnum" style="margin:0">ERR_CONNECTION_RESET</p>
+        <button class="btn btn-primary" type="button" data-retry>Volver a cargar</button>
+        <p class="muted" style="margin:0">Al volver a cargar, el navegador reenvía el mismo formulario con la misma Idempotency-Key: el gasto se registra una sola vez.</p></div>
+      ${rn(after ? 'Idempotencia · el reenvío devuelve el mismo gasto, sin duplicarlo' : 'HU-010 C15 · RN-166 · no aparece en Gastos del mes ni queda el PDF en el contenedor')}</div>`;
+  }
+
+  // ---------- Init ----------
+  const opt = (v, t) => `<option value="${v}">${t}</option>`;
+  const ctx = CH.init({
+    code: 'P-032', title: 'Registrar gasto', active: 'P-030',
+    roles: ['rosa', 'marco', 'ana'],
+    states: [['data', 'Con datos'], ['invalid', 'Error de validación (422)'], ['file413', 'Archivo muy grande (413)'], ['file415', 'Tipo de archivo no permitido (415)'],
+             ['empty', 'Vacío (sin proveedores)'], ['loading', 'Cargando'], ['error', 'Error']],
+    extraControls: `<div class="proto-x"><div><label for="sim-file">Archivo simulado</label><select id="sim-file">${opt('', '(ninguno)')}
+        ${Object.entries(SIMFILES).map(([k, f]) => opt(k, `${f.name} · ${kbText(f.kb)}`)).join('')}</select></div>
+      <div><label for="outcome">Al pulsar "Registrar gasto", el servidor</label><select id="outcome">
+        ${opt('ok', 'valida los datos (201 o 422/413/415)')}${opt('cut', 'se corta la red durante la carga (RN-166)')}
+        ${opt('cut-after', 'se corta la red después de guardar (reenvío idempotente)')}${opt('error', '500 · error inesperado')}</select></div>
+      <div><label for="example">Criterio de HU-010</label><select id="example">${Object.entries(EXAMPLES).map(([k, [t]]) => opt(k, t)).join('')}</select></div>
+      <button class="proto-btn" type="button" id="fill">Rellenar</button></div>` + EXP.scenarioControls(),
+    route: '/expenses/new',
+    render(c) {
+      // RN-032: BoardMember (Marco, HU-010 C7) y Owner (Ana, C14) → 403
+      if (!c.persona.admin) { c.title = 'No tienes acceso a esta página'; return CH.deniedView(); }
+      if (c.state === 'loading') return CH.loadingView('SSR: el servidor entrega el formulario completo. Al enviar, el botón pasa a "Enviando…" (🧩 JS opcional).');
+      const d = setup(c);
+      if (c.state === 'error' || d.fatal) { c.title = 'Algo salió mal'; return CH.errorView(); }
+      if (d.cut) return cutView(c);
+      return formView(c);
+    }
+  });
+
+  // ---------- Interacciones ----------
+  function sync() {
+    const f = ctx.data.f; if (!f) return;
+    [['desc', 'f-desc'], ['amount', 'f-amount'], ['date', 'f-date'], ['cat', 'f-cat'], ['sup', 'f-sup']].forEach(([k, id]) => { const el = $id(id); if (el) f[k] = el.value; });
+  }
+  function clearFile() { ctx.data.file = null; const s = $id('sim-file'); if (s) s.value = ''; }
+
+  function create() {
+    const d = ctx.data;
+    const prev = EXP.byKey(d.key);                                        // misma clave → mismo gasto (no se duplica)
+    if (prev) return prev;
+    const n = Math.round(Number(d.f.amount.trim()) * 100) / 100;
+    const e = { id: EXP.nextId(), date: d.f.date, reg: TODAY, regAt: CH.nowStamp(), desc: d.f.desc.trim(), cat: d.f.cat, sup: d.f.sup,
+      amount: n, void: null, hire: null,
+      receipt: { label: '', file: d.file.name, kb: d.file.kb }, by: 'Administración', createdAt: CH.nowStamp(), idempotencyKey: d.key };
+    // Si es un gasto de la semilla que aún no existe a esta fecha-hora (HU-010 C1: e-1104 se registra el 20/11 a las 16:00),
+    // este registro ocupa su lugar y no se duplica
+    const r = EXP.seedMatch(e); if (r) e.replaces = r;
+    return EXP.add(e);
+  }
+  // Post/Redirect/Get: P-031 del gasto con "Registraste el gasto."
+  const toDetail = (id, retried) => CH.go('P-031', `id=${id}&arrive=registered${retried ? '&retried=1' : ''}`);
+
+  function submit(outcome) {
+    const d = ctx.data;
+    if (outcome === 'error') { d.fatal = true; ctx.rerender(); return; }
+    const E = validate(d);
+    if (E.length) { d.errors = E; clearFile(); ctx.rerender(); return; }   // §3.0.4: se vuelve a elegir el archivo
+    d.errors = null;
+    if (outcome === 'cut') { d.cut = 'before'; ctx.rerender(true); return; }
+    const e = create();
+    if (outcome === 'cut-after') { d.cut = 'after'; ctx.rerender(true); return; }
+    toDetail(e.id);
+  }
+
+  document.addEventListener('submit', ev => {
+    if (ev.target.id !== 'exp-form') return;
+    ev.preventDefault(); sync();
+    CH.sending($id('btn-submit'), 800, () => submit($id('outcome').value));
+  });
+
+  document.addEventListener('change', ev => {
+    const t = ev.target;
+    if (t.id === 'f-file') {
+      const file = t.files && t.files[0];
+      ctx.data.file = file ? { name: file.name, kb: Math.max(1, Math.round(file.size / 1024)) } : null;
+      $id('sim-file').value = '';
+      sync(); ctx.rerender(); $id('f-file').focus();
+    } else if (t.id === 'sim-file') {
+      if (!ctx.data.f || ctx.data.cut) return;
+      ctx.data.file = SIMFILES[t.value] || null; sync(); ctx.rerender();
+    }
+  });
+
+  document.addEventListener('click', ev => {
+    const fl = ev.target.closest('[data-focus]');
+    if (fl) { ev.preventDefault(); const el = $id(fl.dataset.focus); if (el) { el.focus(); el.scrollIntoView({ block: 'center' }); } return; }
+    if (ev.target.closest('[data-retry]')) {                // el navegador reenvía el mismo POST (con el mismo archivo y la misma clave)
+      const d = ctx.data;
+      const e = d.cut === 'before' ? create() : EXP.byKey(d.key);
+      toDetail(e.id, true); return;
+    }
+    const sim = ev.target.closest('[data-sim]');
+    if (sim) { ev.preventDefault(); sync(); ctx.rerender(); CH.simulate('P-043', '(<code>?returnUrl=/expenses/new</code>) y al guardar volvería a P-032'); return; }
+    if (ev.target.id === 'fill') {
+      if (!ctx.persona.admin || ['loading', 'error'].includes(ctx.state)) return;
+      const d = setup(ctx), [, ex] = EXAMPLES[$id('example').value];
+      const v = Object.assign({}, BASE_EX, ex);
+      Object.assign(d.f, { desc: v.desc, amount: v.amount, date: v.date, cat: v.cat, sup: v.sup });
+      $id('sim-file').value = v.file; d.file = SIMFILES[v.file] || null;
+      $id('outcome').value = v.outcome || 'ok';
+      d.errors = null; d.cut = null; d.fatal = false; d.key = uuid7();
+      ctx.rerender();
+    }
+  });
+})();
+</script>
+</body>
+</html>

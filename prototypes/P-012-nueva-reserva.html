@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="es-PE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Nueva reserva · CondoHub</title>
+<link rel="stylesheet" href="assets/condohub.css">
+<style>
+.step{display:flex;flex-direction:column;gap:var(--space-6)}
+.date-row{display:flex;flex-wrap:wrap;gap:0 var(--space-3);align-items:flex-end}
+.date-row .input{flex:1 1 11rem;width:auto}
+.date-row .btn{flex:0 0 auto}
+.busy{display:flex;flex-direction:column;gap:var(--space-2);border-top:1px solid var(--color-border-subtle);padding-top:var(--space-4)}
+.busy h3:focus{box-shadow:none}
+.slots{margin:0;padding-left:1.25rem;font-size:1.125rem}
+.time-row{display:grid;grid-template-columns:1fr;gap:var(--space-4)}
+@container shell (min-width:22.5em){.time-row{grid-template-columns:1fr 1fr}}
+.unit-row{display:grid;grid-template-columns:1fr 1fr;gap:var(--space-3)}
+.unit-fixed{font-weight:600;font-size:1.125rem;margin:0}
+.unit-fixed:focus{box-shadow:var(--focus-ring)}
+.hint-warn{display:flex;gap:var(--space-2);align-items:flex-start;background:var(--color-warning-subtle);color:var(--color-warning);border-left:4px solid var(--color-warning);padding:var(--space-2) var(--space-3);border-radius:var(--radius-sm);font-weight:600}
+.hint-warn svg{flex:none;margin-top:2px}
+.admin-box{border:1px solid var(--color-border-subtle);border-left:4px solid var(--color-secondary);border-radius:var(--radius-md);background:var(--color-surface-alt);padding:var(--space-4);display:flex;flex-direction:column;gap:var(--space-4)}
+.admin-box legend{padding:0 var(--space-1)}
+.input-num{max-width:10rem}
+.count{margin:var(--space-2) 0 0;font-weight:600}
+.count.over{color:var(--color-danger)}
+.privacy .check{font-weight:600}
+.btn-full{width:100%}
+.submit{display:flex;flex-direction:column;gap:var(--space-2)}
+</style>
+</head>
+<body>
+<script src="assets/shell.js"></script>
+<script>
+// P-012 · Nueva reserva — 09-ui-spec.md §3.3, flujos F3 y F11. HU-005, HU-006, HU-006B, HU-007.
+// Reglas: RN-019, RN-021, RN-022, RN-078, RN-079, RN-119, RN-120, RN-023, RN-123, RN-024/RN-081, RN-080,
+// RN-025/RN-075/RN-077, RN-076, RN-086/RN-087, RN-163.
+(function () {
+  const { DATA, ICON, TODAY, esc, fmtDate, rn, alert, fieldError } = CH;
+  const NOW = CH.NOW;                          // hora simulada común (shell.js), por defecto 10:30
+  const NEW_ID = 'r-9010';                     // id de la reserva creada → P-013
+  const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+  const DAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+
+  // Franjas Confirmadas de otras unidades que no están en CH.DATA (solo se muestran las horas)
+  const EXTRA_BUSY = [
+    { area: 'Salón de fiestas', date: '2026-12-12', start: '13:00', end: '17:00' },
+    { area: 'Parrilla', date: '2026-12-03', start: '12:00', end: '16:00' }
+  ];
+  // Cupo ya usado por unidades que no están en CH.DATA (F11: A-1104 usó 3 de 4 de la Parrilla en diciembre)
+  const QUOTA_EXTRA = { 'A-1104|a-parrilla|2026-12': 3 };
+  // Vínculos activos de cada persona (RN-025). B-1203 está alquilada: su propietario no puede reservar (RN-077)
+  const LINKS = { ana: [{ unit: 'A-502' }], carla: [{ unit: 'A-301' }], luis: [{ unit: 'B-104' }, { unit: 'B-1203', rented: true }] };
+  // Padrón para el modo Administrator (RN-076): torre → número → personas con vínculo activo
+  const REGISTRY = {
+    A: { '301': [['Carla Díaz', 'Inquilina'], ['Héctor Vargas', 'Propietario']], '502': [['Ana Quispe', 'Propietaria'], ['Martín Quispe', 'Propietario']],
+         '704': [['Jorge Paredes', 'Propietario']], '1104': [['Rosa Huamán', 'Propietaria']] },
+    B: { '104': [['Luis Rojas', 'Propietario no residente']], '302': [['Sofía Paredes', 'Propietaria']],
+         '1203': [['Pedro Salas', 'Inquilino'], ['Luis Rojas', 'Propietario no residente']] },
+    C: { '110': [['Javier Cárdenas', 'Propietario']], '201': [['Rosa Huamán', 'Propietaria']] }
+  };
+  const RENTED = ['A-301', 'B-1203'];
+  const NAMES = ['Pedro Ramos', 'Lucía Torres', 'Carmen Ruiz', 'José Ccahuana', 'Rosa Llanos', 'Fernando Alva', 'Gabriela Inga', 'Hugo Tapia',
+    'Inés Rivas', 'Martín Chávez', 'Elena Vílchez', 'Rodrigo Salas', 'Camila Ñique', 'Paola Mendoza', 'Ricardo Lazo', 'Milagros Torres',
+    'Diego Huerta', 'Valeria Soto', 'Andrés Paz', 'Lucía Ramos', 'Jorge Quispe', 'Silvia Mamani', 'Raúl Condori', 'Patricia Huamaní',
+    'Óscar Villanueva', 'Daniela Flores', 'Kevin Rojas', 'Mariela Chumpitaz', 'César Gutiérrez', 'Natalia Benavides', 'Luis Alberto Pinto',
+    'Karina Espinoza', 'Miguel Ángel Zapata', 'Fiorella Castañeda', 'Renato Aguilar', 'Claudia Sánchez', 'Alonso Medina', 'Jimena Cárdenas',
+    'Bruno Delgado', 'Ximena Arévalo'];
+  const FIELD_ORDER = ['f-area', 'f-date', 'f-unit', 'f-tower', 'f-host', 'f-start', 'f-end', 'f-people', 'f-guests', 'f-privacy'];
+
+  // ---------- Helpers ----------
+  const areaById = id => DATA.areas.find(a => a.id === id) || null;
+  // RN-079 por instante: el último inicio permitido es ahora + anticipación en segundos (P-061 la guarda en segundos)
+  const limitAt = a => { const t = new Date(Date.parse(TODAY + 'T' + NOW + ':00Z') + (a.advanceSeconds || a.advanceDays * 86400) * 1000).toISOString();
+    return { date: t.slice(0, 10), time: t.slice(11, 16) }; };
+  const addDays = (iso, n) => { const [y, m, d] = iso.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10); };
+  const weekday = iso => DAYS[new Date(iso + 'T12:00:00Z').getUTCDay()];
+  const monthName = iso => MONTHS[Number(iso.slice(5, 7)) - 1];
+  const mins = t => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+  const maxMin = a => a.maxMinutes || parseInt(a.maxHours, 10) * 60;      // maxMinutes: configurado en P-061
+  const hasSecs = t => t.length > 5 && t.slice(6, 8) !== '00';
+  const guestList = s => String(s || '').split('\n').map(x => x.trim()).filter(Boolean);
+  const isoDate = s => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
+  const $id = id => document.getElementById(id);
+  function uuid7() {
+    const h = Date.now().toString(16).padStart(12, '0');
+    const r = n => Array.from({ length: n }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-7${r(3)}-${'89ab'[Math.floor(Math.random() * 4)]}${r(3)}-${r(12)}`;
+  }
+
+  // ---------- Datos derivados ----------
+  const area = c => areaById(c.data.areaId);
+  const allowedUnits = c => {
+    if (c.persona.admin || c.state === 'nounits') return [];
+    const u = (LINKS[c.roleKey] || []).filter(l => !l.rented).map(l => l.unit);
+    if (c.state === 'multi') u.push('B-708');
+    return u;
+  };
+  const unitOf = c => c.persona.admin ? (c.data.f.tower && c.data.f.number ? c.data.f.tower + '-' + c.data.f.number : '') : c.data.f.unit;
+  function busy(c, a, date) {
+    const base = c.state === 'empty' ? [] : DATA.reservations.filter(r => r.status === 'Confirmed').concat(EXTRA_BUSY);
+    return base.concat(c.data.added).filter(r => CH.areaAlias(r.area) === a.name && r.date === date)
+      .map(r => ({ start: r.start, end: r.end })).sort((x, y) => x.start.localeCompare(y.start));
+  }
+  // RN-080: cuentan Confirmed y Completed; las Cancelled no
+  function used(c, unit, a, month) {
+    let n = DATA.reservations.filter(r => r.unit === unit && CH.areaAlias(r.area) === a.name && r.date.slice(0, 7) === month &&
+      (r.status === 'Confirmed' || r.status === 'Completed')).length;
+    n += QUOTA_EXTRA[unit + '|' + a.id + '|' + month] || 0;
+    if (c.state === 'quota' && month === '2026-12') n = Math.max(n, a.perUnitMonth);
+    return n;
+  }
+  function unitHint(c, unit) {
+    const a = area(c), who = c.persona.admin ? 'La unidad' : 'Tu unidad', mes = monthName(c.data.date);
+    if (!unit) return { warn: false, text: 'Al elegir la unidad verás cuántas reservas de esta área usó en el mes.' };
+    const u = used(c, unit, a, c.data.date.slice(0, 7)), max = a.perUnitMonth;
+    if (u >= max) return { warn: true, text: `${who} ya usó sus ${max} reservas de esta área en ${mes}.` };
+    let text = `${who} usó ${u} de ${max} reservas de esta área en ${mes}.`;
+    if (c.persona.admin && RENTED.includes(unit)) text += ' Está alquilada: elige como anfitrión a su inquilino.';
+    return { warn: false, text };
+  }
+  const hintHtml = (id, h) => `<p class="hint${h.warn ? ' hint-warn' : ''}" id="${id}">${h.warn ? ICON.warn : ''}<span>${esc(h.text)}</span></p>`;
+
+  // ---------- Estado inicial (simula el GET /reservations/new?areaId=&date=) ----------
+  function setup(c) {
+    const d = c.data;
+    d.init = true; d.added = []; d.errors = null; d.errKind = null; d.key = uuid7();
+    const pa = areaById(c.params.get('areaId'));
+    d.areaFixed = !!pa && !c.persona.admin;
+    d.areaId = pa ? pa.id : null;
+    d.date = isoDate(c.params.get('date')) && c.params.get('date') >= TODAY ? c.params.get('date') : TODAY;
+    d.f = { unit: allowedUnits(c)[0] || '', tower: '', number: '', host: '', start: '', end: '', people: '', guests: '', privacy: false };
+    if (c.state === 'quota') { d.date = '2026-12-03'; if (!d.areaId) d.areaId = 'a-salon'; }
+    if (c.state === 'invalid') {
+      if (!d.areaId) d.areaId = 'a-salon';
+      d.date = '2026-12-12';
+      Object.assign(d.f, { start: '19:00', end: '23:00', people: '2', guests: NAMES.slice(0, 39).join('\n'), privacy: false });
+      d.errors = validate(c); d.errKind = 'post';
+    }
+  }
+  const ensure = c => { if (!c.data.init) setup(c); };
+
+  // ---------- Validación (simula las reglas del servidor, §3.0.6) ----------
+  function validate(c) {
+    const a = area(c), f = c.data.f, d = c.data.date, admin = c.persona.admin, E = [];
+    const add = (id, code, msg) => { if (!E.some(e => e.id === id)) E.push({ id, code, msg }); };
+    if (admin) {
+      if (!f.tower || !f.number) add('f-tower', 'FIELD_REQUIRED', 'Elige la torre y el número de la unidad.');
+      else if (!f.host) add('f-host', 'RESERVATION_HOST_REQUIRED', 'Elige a la persona anfitriona de la unidad.');
+    }
+    const unit = unitOf(c);
+    if (unit && used(c, unit, a, d.slice(0, 7)) >= a.perUnitMonth)
+      add(admin ? 'f-tower' : 'f-unit', 'RESERVATION_MONTHLY_LIMIT_REACHED',
+        `${admin ? 'La' : 'Tu'} unidad ya usó sus ${a.perUnitMonth} reservas de esta área en ${monthName(d)}.`);
+    // RN-079: por instante, no por día; el último inicio permitido es ahora + anticipación
+    const L = limitAt(a), tooFar = `Solo puedes reservar hasta el ${fmtDate(L.date)} a las ${L.time}.`;
+    if (d > L.date) add('f-date', 'RESERVATION_TOO_FAR_AHEAD', tooFar);
+    else if (d === L.date && f.start && f.start.slice(0, 5) > L.time) add('f-start', 'RESERVATION_TOO_FAR_AHEAD', tooFar);
+
+    if (!f.start) add('f-start', 'FIELD_REQUIRED', 'Completa la hora de inicio.');
+    if (!f.end) add('f-end', 'FIELD_REQUIRED', 'Completa la hora de fin.');
+    if (f.start && f.end) {
+      if (hasSecs(f.start) || hasSecs(f.end))
+        add(hasSecs(f.start) ? 'f-start' : 'f-end', 'RESERVATION_SLOT_NOT_WHOLE_MINUTES', 'Usa horas en minutos exactos, sin segundos.');
+      const s = f.start.slice(0, 5), e = f.end.slice(0, 5);
+      if (d < TODAY || (d === TODAY && s < NOW)) add('f-start', 'RESERVATION_IN_THE_PAST', 'La hora de inicio ya pasó.');
+      if (e <= s) add('f-end', 'RESERVATION_INVALID_TIME_SLOT', 'La hora de fin debe ser posterior a la de inicio.');
+      else {
+        const out = `La franja está fuera del horario del área (${a.open} a ${a.close}).`;
+        if (s < a.open) add('f-start', 'RESERVATION_OUTSIDE_OPENING_HOURS', out);
+        if (e > a.close) add('f-end', 'RESERVATION_OUTSIDE_OPENING_HOURS', out);
+        if (mins(e) - mins(s) > maxMin(a)) add('f-end', 'RESERVATION_EXCEEDS_MAX_DURATION', `La reserva supera la duración máxima del área (${a.maxHours}).`);
+        // RN-024: franjas semiabiertas [inicio, fin)
+        if (busy(c, a, d).some(b => s < b.end && b.start < e)) add('f-start', 'RESERVATION_OVERLAP', 'El área ya está reservada en ese horario.');
+      }
+    }
+    const p = f.people === '' ? NaN : Number(f.people);
+    const okP = Number.isInteger(p) && p >= 1;
+    if (!okP) add('f-people', 'RESERVATION_HOST_REQUIRED', 'Indica al menos 1 persona de la unidad.');
+    const g = guestList(f.guests).length, total = (okP ? p : 0) + g;
+    if (total > a.capacity)
+      add(g ? 'f-guests' : 'f-people', 'RESERVATION_EXCEEDS_CAPACITY', `Son ${total} personas y el aforo es ${a.capacity}. Quita ${total - a.capacity}.`);
+    if (g > 0 && !f.privacy) add('f-privacy', 'GUEST_PRIVACY_NOTICE_REQUIRED', 'Marca la casilla del aviso de privacidad para registrar invitados.');
+    return E.sort((x, y) => FIELD_ORDER.indexOf(x.id) - FIELD_ORDER.indexOf(y.id));
+  }
+
+  // ---------- Render ----------
+  function renderPage(c) {
+    const a = area(c), admin = c.persona.admin, E = c.data.errors || [], f = c.data.f;
+    const err = id => E.find(x => x.id === id);
+    const desc = (id, ...hints) => { const ids = hints.filter(Boolean); if (err(id)) ids.push(id + '-err');
+      return (ids.length ? ` aria-describedby="${ids.join(' ')}"` : '') + (err(id) ? ' aria-invalid="true"' : ''); };
+    const fe = id => err(id) ? `<div id="${id}-err">${fieldError(esc(err(id).msg))}</div>` : '';
+    const req = '<span class="req">(obligatorio)</span>';
+    const back = admin ? ['P-062', 'Reservas del condominio'] : ['P-011', 'Áreas comunes'];
+    c.title = a ? `Reservar ${a.name}` : (admin ? 'Reservar a nombre de una unidad' : 'Nueva reserva');
+
+    let h = `<div>
+      <nav class="crumbs" aria-label="Migas de pan"><ol><li><a href="#" data-go="home">Inicio</a></li><li><a href="#" data-go="${back[0]}">${back[1]}</a></li><li aria-current="page">Nueva reserva</li></ol></nav>
+      <a href="#" class="back" data-go="${back[0]}">← ${back[1]}</a>
+      <h1 class="page">${esc(c.title)}</h1>
+      ${a ? `<p class="lead tnum">Horario ${a.open} – ${a.close} · máx. ${parseInt(a.maxHours, 10)} h · aforo ${a.capacity}</p>`
+          : `<p class="lead">Elige el área y la fecha para ver la disponibilidad.</p>`}
+      ${admin ? `<p class="lead">Reserva a nombre de una unidad del condominio.</p>` : ''}
+    </div>`;
+
+    if (E.length) {
+      const n = E.length;
+      h += alert('danger', c.data.errKind === 'get' ? 'No pudimos mostrar la disponibilidad' : 'No pudimos confirmar la reserva',
+        `<p>${n === 1 ? 'Corrige este dato:' : `Corrige estos ${n} datos:`}</p>
+         <ul>${E.map(e => `<li><a href="#${e.id}" data-focus="${e.id}">${esc(e.msg)}</a></li>`).join('')}</ul>
+         ${rn('422/403 · se conservan los valores, los invitados, la casilla y la misma Idempotency-Key')}`, 'alert');
+    }
+
+    // Sin unidades permitidas (todas alquiladas o sin vínculo activo)
+    if (!admin && !allowedUnits(c).length) {
+      h += alert('info', 'No tienes una unidad con la que puedas reservar. Si tu unidad está alquilada, la reserva la hace su inquilino.',
+        rn('RN-075 · RN-077 · sin formulario'));
+      h += `<div><a href="#" class="btn btn-secondary btn-block" data-go="${back[0]}">Volver a ${back[1]}</a></div>`;
+      return `<div class="content read">${h}</div>`;
+    }
+
+    // ---- 1. Fecha (formulario GET separado) ----
+    const showAreaSel = admin || !c.data.areaFixed;
+    const limit = a ? limitAt(a).date : '';
+    h += `<form class="card step" method="get" action="/reservations/new" data-form="avail" novalidate>
+      <h2>${showAreaSel ? '1. Elige el área y la fecha' : '1. Elige la fecha'}</h2>
+      ${showAreaSel ? `<div class="field"><label for="f-area">Área ${req}</label>
+        <select class="select" id="f-area" name="areaId"${desc('f-area')}><option value="">Elige un área</option>
+        ${DATA.areas.map(x => `<option value="${x.id}"${x.id === c.data.areaId ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}</select>${fe('f-area')}</div>`
+        : `<input type="hidden" name="areaId" value="${a.id}">`}
+      <div class="field"><label for="f-date">Fecha ${req}</label>
+        <p class="hint" id="f-date-hint">${a ? `Desde hoy hasta el ${fmtDate(limit)} a las ${limitAt(a).time} (${a.advanceDays} días de anticipación).` : 'Desde hoy.'}</p>
+        <div class="date-row"><input class="input" type="date" id="f-date" name="date" value="${c.data.date}" min="${TODAY}"${limit ? ` max="${limit}"` : ''}${desc('f-date', 'f-date-hint')}>
+        <button class="btn btn-secondary" type="submit">Ver disponibilidad</button></div>${fe('f-date')}</div>`;
+    if (a) {
+      const list = busy(c, a, c.data.date);
+      h += `<div class="busy"><h3 id="h-busy" tabindex="-1">Ocupado ese día</h3>
+        <p class="muted">${esc(a.name)} · ${weekday(c.data.date)} <time datetime="${c.data.date}" class="tnum">${fmtDate(c.data.date)}</time></p>
+        ${list.length ? `<ul class="slots tnum">${list.map(b => `<li>${b.start} – ${b.end}</li>`).join('')}</ul>`
+                      : `<div class="empty">${ICON.cal}<p class="muted">Libre todo el día (horario ${a.open} – ${a.close})</p></div>`}
+        ${rn('RN-024 · franjas Confirmadas del día, sin unidad ni nombre (privacidad) · [inicio, fin)')}</div>`;
+    }
+    h += `</form>`;
+
+    if (!a) return `<div class="content read">${h}</div>`;
+
+    // ---- 2 y 3. Formulario principal (POST) ----
+    const units = allowedUnits(c), unit = unitOf(c);
+    let unitBlock;
+    if (admin) {
+      const nums = f.tower ? Object.keys(REGISTRY[f.tower]) : [];
+      unitBlock = `<fieldset class="admin-box"><legend class="field-label">Unidad ${req}</legend>
+        ${rn('🔒 Administrator · RN-076: cualquier unidad, anfitrión con vínculo activo · aplica aforo y cupo, no RN-077')}
+        <div class="unit-row">
+          <div class="field"><label for="f-tower">Torre</label><select class="select" id="f-tower" name="tower"${desc('f-tower', 'f-tower-hint')}>
+            <option value="">Elige</option>${Object.keys(REGISTRY).map(t => `<option value="${t}"${t === f.tower ? ' selected' : ''}>Torre ${t}</option>`).join('')}</select></div>
+          <div class="field"><label for="f-number">Número</label><select class="select" id="f-number" name="number">${numberOptions(nums, f.number)}</select></div>
+        </div>
+        ${hintHtml('f-tower-hint', unitHint(c, unit))}${fe('f-tower')}
+        <div class="field"><label for="f-host">Anfitrión ${req}</label><p class="hint" id="f-host-hint">Personas con vínculo activo con la unidad.</p>
+          <select class="select" id="f-host" name="host"${desc('f-host', 'f-host-hint')}>${hostOptions(unit, f.host)}</select>${fe('f-host')}</div>
+      </fieldset>`;
+    } else if (units.length > 1) {
+      unitBlock = `<div class="field"><label for="f-unit">Unidad ${req}</label>
+        <select class="select" id="f-unit" name="unit"${desc('f-unit', 'f-unit-hint')}>${units.map(u => `<option value="${u}"${u === f.unit ? ' selected' : ''}>${u}</option>`).join('')}</select>
+        ${hintHtml('f-unit-hint', unitHint(c, unit))}${fe('f-unit')}</div>`;
+    } else {
+      unitBlock = `<div class="field"><input type="hidden" name="unit" value="${unit}">
+        <p class="unit-fixed" id="f-unit" tabindex="-1"${desc('f-unit', 'f-unit-hint')}>Unidad ${unit}</p>
+        ${hintHtml('f-unit-hint', unitHint(c, unit))}${fe('f-unit')}
+        ${c.roleKey === 'luis' ? rn('RN-077 · B-1203 no se ofrece: está alquilada; la reserva la hace su inquilino') : ''}</div>`;
+    }
+    unitBlock += rn('RN-080 · cupo del mes de la franja; las canceladas no cuentan');
+
+    const guestsN = guestList(f.guests).length;
+    h += `<form class="card step" method="post" action="/api/reservations" data-form="reserve" novalidate>
+      <input type="hidden" name="IdempotencyKey" value="${c.data.key}">
+      <input type="hidden" name="areaId" value="${a.id}"><input type="hidden" name="date" value="${c.data.date}">
+      ${rn('RN-163 · Idempotency-Key ' + c.data.key + ' (UUIDv7, ADR-0014)')}
+      <section class="step" aria-labelledby="h-slot"><h2 id="h-slot">2. Elige la franja</h2>
+        ${unitBlock}
+        <div><div class="time-row">
+          <div class="field"><label for="f-start">Desde ${req}</label>
+            <input class="input tnum" type="time" step="60" id="f-start" name="start" min="${a.open}" max="${a.close}" value="${esc(f.start)}"${desc('f-start', 'f-time-hint')}>${fe('f-start')}</div>
+          <div class="field"><label for="f-end">Hasta ${req}</label>
+            <input class="input tnum" type="time" step="60" id="f-end" name="end" min="${a.open}" max="${a.close}" value="${esc(f.end)}"${desc('f-end', 'f-time-hint')}>${fe('f-end')}</div>
+        </div><p class="hint" id="f-time-hint">Máximo ${esc(a.maxHours)}. Termina a las ${a.close} como muy tarde.</p></div>
+        ${rn('RN-021 horario · RN-022 duración · RN-078 pasado · RN-079 anticipación · RN-119 fin > inicio · RN-120 minutos exactos')}
+      </section>
+      <section class="step" aria-labelledby="h-who"><h2 id="h-who">3. ¿Quiénes asisten?</h2>
+        <div class="field"><label for="f-people">${admin ? 'Personas de la unidad (contando al anfitrión)' : 'Personas de tu unidad (contándote)'} ${req}</label>
+          <input class="input input-num tnum" type="number" id="f-people" name="unitPeople" min="1" max="${a.capacity}" inputmode="numeric" value="${esc(f.people)}"${desc('f-people')}>${fe('f-people')}</div>
+        <div class="field"><label for="f-guests">Invitados (opcional)</label>
+          <p class="hint" id="f-guests-hint">Escribe un nombre completo por línea. Portería los verá para dejarlos pasar.</p>
+          <textarea class="textarea" rows="6" id="f-guests" name="guests"${desc('f-guests', 'f-guests-hint', 'f-count')}>${esc(f.guests)}</textarea>
+          <p class="count tnum${(parseInt(f.people, 10) || 0) + guestsN > a.capacity ? ' over' : ''}" id="f-count" aria-live="polite">${countText(a, f.people, guestsN)}</p>${fe('f-guests')}
+          ${rn('RN-023 · aforo = personas de la unidad + invitados · RN-123 mínimo 1 persona de la unidad')}</div>
+        ${alert('info', 'Aviso de privacidad de invitados',
+          `<p id="f-privacy-text">Los nombres de tus invitados solo se usan para que portería los deje pasar el día de la reserva y se eliminan 90 días después de la reserva. No se comparten con otros residentes.</p>
+           <p class="muted">Texto provisional, pendiente de la revisión legal (Ley N.° 29733).</p>
+           <label class="check" for="f-privacy"><input type="checkbox" id="f-privacy" name="privacyNoticeAccepted" value="true"${f.privacy ? ' checked' : ''}${desc('f-privacy', 'f-privacy-text')}>
+           <span>Informé a mis invitados de este aviso</span></label>${fe('f-privacy')}
+           ${rn('RN-087 · obligatorio si hay invitados · ⚠️ Q18 · Q21')}`).replace('class="alert alert-info"', 'class="alert alert-info privacy"')}
+      </section>
+      <div class="submit"><button class="btn btn-primary btn-full" type="submit" id="btn-confirm">Confirmar reserva</button>
+        <p class="muted">La reserva se confirma al instante si cumple las reglas del área.</p>${rn('RN-019 · confirmación automática, sin aprobación manual')}</div>
+    </form>`;
+    return `<div class="content read">${h}</div>`;
+  }
+
+  function numberOptions(nums, sel) {
+    if (!nums.length) return '<option value="">Elige primero la torre</option>';
+    return '<option value="">Elige</option>' + nums.map(n => `<option value="${n}"${n === sel ? ' selected' : ''}>${n}</option>`).join('');
+  }
+  function hostOptions(unit, sel) {
+    const t = unit ? unit.split('-') : null, people = t && REGISTRY[t[0]] ? REGISTRY[t[0]][t[1]] || [] : [];
+    if (!people.length) return '<option value="">Elige primero la unidad</option>';
+    return '<option value="">Elige</option>' + people.map(([n, r]) => `<option value="${esc(n)}"${n === sel ? ' selected' : ''}>${esc(n)} · ${r}</option>`).join('');
+  }
+  function countText(a, people, guestsN) {
+    const p = parseInt(people, 10), total = (p > 0 ? p : 0) + guestsN;
+    return `Total: ${total} de ${a.capacity} personas` + (total > a.capacity ? ` · supera el aforo por ${total - a.capacity}` : '');
+  }
+
+  // ---------- Init ----------
+  const ctx = CH.init({
+    code: 'P-012', title: 'Nueva reserva', active: 'P-011',
+    roles: ['ana', 'carla', 'luis', 'rosa', 'rosaRes'],
+    states: [['data', 'Con datos'], ['empty', 'Vacío (día libre)'], ['invalid', 'Error de validación'], ['quota', 'Cupo agotado'],
+             ['nounits', 'Sin unidades permitidas'], ['multi', 'Con 2 unidades'], ['loading', 'Cargando'], ['error', 'Error'], ['denied', 'Sin permiso (403)']],
+    extraControls: `<label class="chk" for="simul"><input type="checkbox" id="simul"> Otra unidad envía la misma franja a la vez (RN-081)</label>
+      <label class="chk" for="replay"><input type="checkbox" id="replay"> Simular corte de red y reenvío (RN-163)</label>
+      <button class="proto-btn" id="fill" type="button">Rellenar ejemplo válido</button>`,
+    route(c) { ensure(c); return `/reservations/new?areaId=${c.data.areaId || ''}&date=${c.data.date}`; },
+    render(c) {
+      ensure(c);
+      if (c.state === 'loading') return CH.loadingView();
+      if (c.state === 'error') { c.title = 'Algo salió mal'; return CH.errorView(); }
+      if (c.state === 'denied') { c.title = 'No tienes acceso a esta página'; return CH.deniedView(); }
+      return renderPage(c);
+    },
+    afterRender(c) {   // el Administrator llega desde P-062: ese es su ítem activo
+      if (c.persona.admin) document.querySelectorAll('.navlist [data-go="P-062"]').forEach(x => x.setAttribute('aria-current', 'page'));
+    }
+  });
+
+  // Lee el formulario principal hacia ctx.data.f (los valores se conservan entre renders)
+  function sync() {
+    const F = ctx.data.f; if (!F) return;
+    ['unit', 'tower', 'number', 'host', 'start', 'end', 'people', 'guests'].forEach(k => {
+      const el = $id('f-' + k); if (el && 'value' in el && el.tagName !== 'P') F[k] = el.value;
+    });
+    const p = $id('f-privacy'); if (p) F.privacy = p.checked;
+  }
+  function refreshUnit() {
+    const hintId = ctx.persona.admin ? 'f-tower-hint' : 'f-unit-hint', el = $id(hintId);
+    if (el) el.outerHTML = hintHtml(hintId, unitHint(ctx, unitOf(ctx)));
+  }
+  function refreshCount() {
+    const el = $id('f-count'), a = area(ctx); if (!el || !a) return;
+    const total = (parseInt($id('f-people').value, 10) || 0) + guestList($id('f-guests').value).length;
+    el.textContent = countText(a, $id('f-people').value, guestList($id('f-guests').value).length);
+    el.classList.toggle('over', total > a.capacity);
+  }
+
+  document.addEventListener('input', e => {
+    if (e.target.id === 'f-people' || e.target.id === 'f-guests') refreshCount();
+  });
+  document.addEventListener('change', e => {
+    const id = e.target.id;
+    if (id === 'f-tower') { sync(); ctx.data.f.number = ''; ctx.data.f.host = '';
+      $id('f-number').innerHTML = numberOptions(ctx.data.f.tower ? Object.keys(REGISTRY[ctx.data.f.tower]) : [], '');
+      $id('f-host').innerHTML = hostOptions('', ''); refreshUnit(); }
+    else if (id === 'f-number') { sync(); ctx.data.f.host = ''; $id('f-host').innerHTML = hostOptions(unitOf(ctx), ''); refreshUnit(); }
+    else if (id === 'f-unit') { sync(); refreshUnit(); }
+  });
+
+  document.addEventListener('click', e => {
+    const fl = e.target.closest('[data-focus]');
+    if (fl) { e.preventDefault(); const el = $id(fl.dataset.focus); if (el) { el.focus(); el.scrollIntoView({ block: 'center' }); } return; }
+    if (e.target.id === 'fill') {
+      if (ctx.state !== 'data' && ctx.state !== 'empty' && ctx.state !== 'multi' && ctx.state !== 'quota' && ctx.state !== 'invalid') return;
+      ensure(ctx); const d = ctx.data, admin = ctx.persona.admin;
+      if (admin) {
+        d.areaId = 'a-parrilla'; d.date = '2026-12-03';
+        Object.assign(d.f, { tower: 'A', number: '1104', host: 'Rosa Huamán', start: '17:00', end: '21:00', people: '2', guests: NAMES.slice(0, 6).join('\n'), privacy: true });
+      } else {
+        if (!d.areaId) d.areaId = 'a-salon';
+        d.date = d.areaId === 'a-salon' ? '2026-12-19' : '2026-12-03';   // la Parrilla solo admite 30 días de anticipación
+        if (d.areaId === 'a-salon') Object.assign(d.f, { start: '19:00', end: '23:00', people: '2', guests: NAMES.slice(0, 38).join('\n'), privacy: true });
+        else Object.assign(d.f, { start: '17:00', end: '21:00', people: '3', guests: NAMES.slice(0, 10).join('\n'), privacy: true });
+      }
+      d.errors = null; ctx.rerender();
+    }
+  });
+
+  document.addEventListener('submit', e => {
+    const form = e.target;
+    if (form.matches('[data-form="avail"]')) {          // "Ver disponibilidad" (GET: recarga la página)
+      e.preventDefault(); sync();
+      const areaId = form.elements.areaId ? form.elements.areaId.value : '', date = form.elements.date.value, a = areaById(areaId);
+      const E = [];
+      if (!a) E.push({ id: 'f-area', msg: 'Elige un área.' });
+      if (!isoDate(date)) E.push({ id: 'f-date', msg: 'Elige una fecha.' });
+      else if (date < TODAY) E.push({ id: 'f-date', msg: 'Elige una fecha desde hoy.' });
+      else if (a && date > limitAt(a).date) E.push({ id: 'f-date', msg: `Solo puedes reservar hasta el ${fmtDate(limitAt(a).date)} a las ${limitAt(a).time}.` });
+      if (a) ctx.data.areaId = a.id;
+      if (E.length) { ctx.data.errors = E; ctx.data.errKind = 'get'; ctx.rerender(); return; }
+      ctx.data.date = date; ctx.data.errors = null; ctx.data.errKind = null;
+      ctx.rerender();
+      const hb = $id('h-busy'); if (hb) hb.focus();
+      return;
+    }
+    if (form.matches('[data-form="reserve"]')) {        // "Confirmar reserva" (POST con Idempotency-Key)
+      e.preventDefault(); sync();
+      const btn = $id('btn-confirm');
+      CH.sending(btn, 800, () => {
+        const E = validate(ctx), a = area(ctx), f = ctx.data.f;
+        if (!E.length && $id('simul').checked) {          // RN-081: la otra solicitud se guardó primero
+          ctx.data.added.push({ area: a.name, date: ctx.data.date, start: f.start.slice(0, 5), end: f.end.slice(0, 5) });
+          E.push({ id: 'f-start', code: 'RESERVATION_OVERLAP', msg: 'El área ya está reservada en ese horario.' });
+        }
+        if (E.length) { ctx.data.errors = E; ctx.data.errKind = 'post'; ctx.rerender(); return; }
+        const replay = $id('replay').checked, guests = guestList(f.guests), admin = !!ctx.persona.admin;
+        const res = { id: NEW_ID, areaId: a.id, area: a.name, unit: unitOf(ctx), host: admin ? f.host : ctx.persona.name,
+          date: ctx.data.date, start: f.start.slice(0, 5), end: f.end.slice(0, 5), status: 'Confirmed',
+          unitPeople: Number(f.people), guests, guestsCount: guests.length, byAdmin: admin, replayed: replay,
+          idempotencyKey: ctx.data.key, createdAt: TODAY + ' ' + NOW };
+        CH.store.set('reservation:' + NEW_ID, JSON.stringify(res));
+        CH.saveReservation(res);                          // visible en P-010, P-014, P-015, P-020 y P-062
+        const go = () => CH.go('P-013', 'id=' + NEW_ID + (replay ? '&replayed=1' : '') + (admin ? '&by=admin' : ''));
+        if (replay) { btn.textContent = 'Reconectando… (misma clave)'; setTimeout(go, 900); } else go();
+      });
+    }
+  });
+})();
+</script>
+</body>
+</html>
