@@ -1,6 +1,7 @@
 # CondoHub — 10 · Validation Log (consolidado)
 
 > **Fase:** Diseño (BMAD) · **Fecha:** 2026-11-08 · **Autor:** Agente Consolidador de Validación ([prompts/11-validation-log.xml](prompts/11-validation-log.xml))
+> **Estado actualizado:** 2026-11-08, después de la auditoría del Spec Finalizer ([docs/validation/auditoria-spec-finalizer.md](docs/validation/auditoria-spec-finalizer.md)). La tabla de §1 conserva las observaciones originales; §2 y §3 muestran el estado actual.
 > **Alcance:** las observaciones de la validación de los 32 prototipos de [prototypes/](prototypes/) contra el Spec Pack (03, 06, 07, 08, 09).
 
 ## Fuentes
@@ -213,21 +214,19 @@
 
 ## 2. Decisiones tomadas
 
-> **Estado posterior (2026-11-08, auditoría del Spec Finalizer).** Las filas "✅ APLICADA · inmediata" ya están aplicadas en 03, 06, 09 y los prototipos. Las filas "⏳ PENDIENTE" están registradas como Q51 a Q95 en [05-preguntas-abiertas.md](05-preguntas-abiertas.md) §9, con su valor por defecto; las que pedían una regla nueva se resolvieron con RN-163 ampliada y RN-176 a RN-179, y Q25 quedó resuelta (RN-041). Las tareas sugeridas T-056 a T-065 están en [08-backlog.md](08-backlog.md). Las citas a `/api/suppliers` y `SUPPLIER_*` de la tabla son históricas: el proveedor se llama `Vendor` (`/api/vendors`, `VENDOR_*`). Detalle: [docs/validation/auditoria-spec-finalizer.md](docs/validation/auditoria-spec-finalizer.md).
-
 **Estados (propuestos por el consolidador; los confirma el autor):**
 
 - **✅ APLICADA · hecha:** el cambio ya está en el Spec Pack o en los prototipos, según la fuente o la comprobación propia.
 - **✅ APLICADA · inmediata:** un cambio pequeño y sin decisiones abiertas (texto, traza, ficha) que se aplica en la próxima edición del archivo. **El consolidador no edita** 03, 06, 07, 08 ni 09: cada uno es de su propio agente.
-- **⏳ PENDIENTE:** cambio importante de la spec que necesita una decisión del autor o más trabajo. **Se resuelve antes de implementar la HU afectada.**
-- **⏳ BACKLOG:** mejora futura, o ajuste del prototipo de demostración que no cambia la spec. Lleva un ID de tarea sugerido, a partir de T-056 (08-backlog.md termina en T-055).
+- **⏳ PENDIENTE:** cambio importante de la spec que necesita una decisión del autor o más trabajo. Desde el 2026-11-08 cada una está registrada en [05-preguntas-abiertas.md](05-preguntas-abiertas.md) §9 con un valor por defecto, o ya está resuelta (columna "Estado actual").
+- **⏳ BACKLOG:** mejora futura, o ajuste del prototipo de demostración que no cambia la spec. Las tareas T-056 a T-065 ya existen en [08-backlog.md](08-backlog.md).
 
 ### Qué aplicar ahora y qué dejar para después
 
 1. **No quedan observaciones Alta abiertas.** Las 14 están aplicadas. Las cuatro "sin verificación independiente" (filas 11 a 14) se comprobaron en esta consolidación. Solo deja un residuo (fila 165, Baja), y el prototipo P-054 (fila 13) no se volvió a probar.
-2. **Aplicar ahora:** las ✅ inmediatas de abajo. Son trazas, textos y precisiones de fichas que no necesitan una decisión.
-3. **Resolver antes de implementar:** las ⏳ PENDIENTE Media de la spec, sobre todo las que crean o cambian RN MUST: filas 19, 37, 58, 64, 72, 74 y 75 (RN nuevas o ampliadas) y filas 26, 30, 31, 52, 59 y 71 (reglas ambiguas).
-4. **Backlog:** los ajustes del prototipo de demostración y las mejoras Baja, agrupados en las tareas T-056 a T-065.
+2. **Inmediatas: aplicadas.** Las 27 ✅ inmediatas de abajo se aplicaron el 2026-11-08 en 03, 06, 09 y los prototipos.
+3. **Pendientes: registrados.** Las ⏳ PENDIENTE son Q51 a Q95 en 05 §9. Nueve se resolvieron con reglas o cambios de arquitectura (filas 19, 23, 37, 45, 58, 59, 64, 69 y 75: RN-163 ampliada, RN-041 por Q25, RN-176 a RN-179, 07 §4.1 y la matriz de permisos). Las demás rigen con su valor por defecto mientras el autor no decida otra cosa: ya no bloquean la implementación.
+4. **Backlog: creado.** T-063 (pruebas derivadas) es Must y está en la Fase 6b de 08; T-056 a T-062, T-064 y T-065 son Could, en la Fase 8.
 
 ### ✅ APLICADA · hecha
 
@@ -251,7 +250,7 @@
 
 > También están hechas, y no tienen fila propia porque la fuente las da por cerradas: VL-P030 o.2 / VL-P031 o.3 (fechas del escenario y de la anulación, iteración 3; **Propia:** 07 l. 668 ya dice `voidedAt 2026-11-21`, Verif. N4), VL-P061 o.3 (la anticipación se truncaba a días, iteración 3), Verif. N5 (trazas de RN-169 a RN-175) y la corrección cruzada de VL-P001 por VL-P007.
 
-### ✅ APLICADA · inmediata (aplicar en la próxima edición)
+### ✅ APLICADA · inmediata (aplicadas el 2026-11-08 en la auditoría del Spec Finalizer)
 
 | # | Cambio | Archivo |
 |---|---|---|
@@ -282,59 +281,60 @@
 | 165 | Quitar `hireSim` de P-031 | P-031 |
 | 168 | Cabecera y categorías de 03 | 03 |
 
-### ⏳ PENDIENTE (decisión del autor o cambio de spec antes de implementar)
+### ⏳ PENDIENTE (registradas en 05 §9; estado al 2026-11-08)
 
-| # | Qué hay que decidir o escribir | Archivo | Bloquea |
-|---|---|---|---|
-| 16 | Si los fallos de enrolamiento suman a RN-111 | 03, 09 | HU-003 |
-| 17 | Criterio de `returnUrl` local en HU-003B y su test | 06 | HU-003B |
-| 18 | Textos de ayuda y procedimiento manual mientras RN-115 y RN-141 sigan diferidas | 09, ADR-0020 | HU-003, HU-003B |
-| 19 | RN nueva del rate limit de `/api/auth/*` | 03, 06 | HU-003B |
-| 22 | Los enlaces de P-002 conservan `returnUrl` | 09 | HU-003 |
-| 23 | TTL de la sesión parcial, tipo de sesión de P-007 y estados comunes de P-002 a P-005 | 07, 09 | HU-003, HU-002B |
-| 26 | RN-070 por condominio | 03, 06 | HU-002B |
-| 27 | Aceptar con sesión iniciada y con otra cuenta (RN-122, F1 2c) | 03, 06, 09 | HU-002 |
-| 28 | Quitar `maxlength` y fijar la unidad de medida en RN-116 | 03, 09 | HU-002 |
-| 30 | Cerrar §6.4 y reescribir RN-088 | 03, 06, 09 | HU-008 |
-| 31 | `cancelledBy` por persona y la condición del aviso | 03, 06 | HU-008 |
-| 34 | La fecha visible y la del POST en P-012 | 09, 06 | HU-005 |
-| 37 | Códigos del anfitrión y anfitrión en una unidad alquilada | 03, 06, 09 | HU-006B |
-| 40 | Alcance de la aceptación del aviso de privacidad (Q18/Q21) | 03, 06 | HU-007 |
-| 41 | Destino del error de cancelación tardía o repetida | 09 | HU-008 |
-| 42 | `<h1>` y datos de portería a medianoche | 09 | HU-009 |
-| 44 | Estado "desactualizada" de portería | 09 | HU-009 |
-| 45 | `no-store` en 07 y su test E2E | 07 | HU-003B, HU-009 |
-| 46 | RN-164 para reservas terminadas | 03 | HU-009 |
-| 47 | Camino del invitado que no está en la lista (F5) | 09, 06 | HU-009 |
-| 49 | Mes futuro en P-030, RN-035 y HU-011 C11 | 03, 06, 09 | HU-011 |
-| 52 | Q30: proveedor elegido y tope de monto | 03, 05 | HU-010B |
-| 53 | Estado "sin comprobante" (Q28) | 09 | HU-011 |
-| 54 | Vínculo gasto–contratación: único e inmutable, corrección y códigos | 03, 06, 09 | HU-010B |
-| 55 | ¿Un gasto vinculado puede ser anterior a la aprobación? | 03 | HU-010B |
-| 57 | Signo y precisión en RN-173 y §3.0.3 | 03, 09 | HU-010 |
-| 58 | RN de idempotencia de gastos (Q48) | 03, 06 | HU-010 |
-| 59 | Q25: `Draft` para la Junta, `403` o `404` | 03, 05, 09 | HU-013, HU-014 |
-| 63 | Q34: proveedor persona natural | 03, 05, 09 | HU-014 |
-| 64 | RN de concurrencia de decisiones (`409`) | 03, 06 | HU-013 |
-| 65 | Documentos adicionales de la contratación o reescribir C14 | 06, 07, 09 | HU-012 |
-| 66 | PDF obligatorio por cotización (Q28) | 03, 09 | HU-012 |
-| 69 | Fila "Registrar proveedor" en la matriz y su test | 09 §6 / 07 | HU-012 |
-| 70 | Aviso de éxito al volver de P-043 | 09 | HU-012 |
-| 71 | Alcance de RN-153 ante el Administrator y nombre en RN-132 | 03, 06, 09 | HU-001 |
-| 72 | RN-058 sin ceros a la izquierda | 03, 06 | HU-001 |
-| 73 | Terminar o modificar vínculos y corregir unidades, o ADR + matrices R1 y R2 | 06, 09, ADR | HU-001 |
-| 74 | RN-002 con invitaciones pendientes | 03, 06 | HU-001, HU-001B |
-| 75 | RN de vínculos duplicados o superpuestos | 03, 06 | HU-001 |
-| 77 | ADR del alta del personal de portería y hint en P-054 | ADR, 09 | HU-009 |
-| 78 | El rol revocado vuelve solo por invitación | 03, 09 | HU-001B |
-| 91 | `returnUrl` entre condominios y `condominiumId` ajeno | 09 | HU-003 |
-| 92 | Sin cambio de condominio en sesión (confirmar en RN-064) | 03, 09 | — |
-| 117 | Control de concurrencia de la cancelación | 07, 09 | HU-008 |
-| 87, 89, 90, 93, 100, 101, 103, 113, 126, 128, 133, 137, 141, 142, 148, 153, 157, 159, 161, 162, 163, 166 | Decisiones Baja de reglas, textos o fichas (ver la tabla) | 03, 06, 07, 09 | Se resuelven al implementar la HU afectada |
+| # | Qué hay que decidir o escribir | Archivo | Bloquea | Estado actual (2026-11-08) |
+|---|---|---|---|---|
+| 16 | Si los fallos de enrolamiento suman a RN-111 | 03, 09 | HU-003 | 🔵 Q51: rige su valor por defecto |
+| 17 | Criterio de `returnUrl` local en HU-003B y su test | 06 | HU-003B | 🔵 Q52: rige su valor por defecto |
+| 18 | Textos de ayuda y procedimiento manual mientras RN-115 y RN-141 sigan diferidas | 09, ADR-0020 | HU-003, HU-003B | 🔵 Q53: rige su valor por defecto |
+| 19 | RN nueva del rate limit de `/api/auth/*` | 03, 06 | HU-003B | ✅ Q54: resuelta en RN-177 |
+| 22 | Los enlaces de P-002 conservan `returnUrl` | 09 | HU-003 | 🔵 Q55: rige su valor por defecto |
+| 23 | TTL de la sesión parcial, tipo de sesión de P-007 y estados comunes de P-002 a P-005 | 07, 09 | HU-003, HU-002B | ✅ Q56: resuelta en 07 §4.1 y ADR-0013 |
+| 26 | RN-070 por condominio | 03, 06 | HU-002B | 🔵 Q57: rige su valor por defecto |
+| 27 | Aceptar con sesión iniciada y con otra cuenta (RN-122, F1 2c) | 03, 06, 09 | HU-002 | 🔵 Q58: rige su valor por defecto |
+| 28 | Quitar `maxlength` y fijar la unidad de medida en RN-116 | 03, 09 | HU-002 | 🔵 Q59: rige su valor por defecto |
+| 30 | Cerrar §6.4 y reescribir RN-088 | 03, 06, 09 | HU-008 | 🔵 Q60: rige su valor por defecto |
+| 31 | `cancelledBy` por persona y la condición del aviso | 03, 06 | HU-008 | 🔵 Q61: rige su valor por defecto |
+| 34 | La fecha visible y la del POST en P-012 | 09, 06 | HU-005 | 🔵 Q62: rige su valor por defecto |
+| 37 | Códigos del anfitrión y anfitrión en una unidad alquilada | 03, 06, 09 | HU-006B | ✅ Q63: resuelta en RN-178 |
+| 40 | Alcance de la aceptación del aviso de privacidad (Q18/Q21) | 03, 06 | HU-007 | 🔵 Q64: rige su valor por defecto |
+| 41 | Destino del error de cancelación tardía o repetida | 09 | HU-008 | 🔵 Q65: rige su valor por defecto |
+| 42 | `<h1>` y datos de portería a medianoche | 09 | HU-009 | 🔵 Q66: rige su valor por defecto |
+| 44 | Estado "desactualizada" de portería | 09 | HU-009 | 🔵 Q67: rige su valor por defecto |
+| 45 | `no-store` en 07 y su test E2E | 07 | HU-003B, HU-009 | ✅ Q68: resuelta en 07 §4.1 |
+| 46 | RN-164 para reservas terminadas | 03 | HU-009 | 🔵 Q69: rige su valor por defecto |
+| 47 | Camino del invitado que no está en la lista (F5) | 09, 06 | HU-009 | 🔵 Q70: rige su valor por defecto |
+| 49 | Mes futuro en P-030, RN-035 y HU-011 C11 | 03, 06, 09 | HU-011 | 🔵 Q71: rige su valor por defecto |
+| 52 | Q30: proveedor elegido y tope de monto | 03, 05 | HU-010B | 🔵 Q72: rige su valor por defecto |
+| 53 | Estado "sin comprobante" (Q28) | 09 | HU-011 | 🔵 Q73: rige su valor por defecto |
+| 54 | Vínculo gasto–contratación: único e inmutable, corrección y códigos | 03, 06, 09 | HU-010B | 🔵 Q74: rige su valor por defecto |
+| 55 | ¿Un gasto vinculado puede ser anterior a la aprobación? | 03 | HU-010B | 🔵 Q75: rige su valor por defecto |
+| 57 | Signo y precisión en RN-173 y §3.0.3 | 03, 09 | HU-010 | 🔵 Q76: rige su valor por defecto |
+| 58 | RN de idempotencia de gastos (Q48) | 03, 06 | HU-010 | ✅ Q77: resuelta en RN-163 ampliada |
+| 59 | Q25: `Draft` para la Junta, `403` o `404` | 03, 05, 09 | HU-013, HU-014 | ✅ Q78: resuelta en RN-041 (Q25) |
+| 63 | Q34: proveedor persona natural | 03, 05, 09 | HU-014 | 🔵 Q79: rige su valor por defecto |
+| 64 | RN de concurrencia de decisiones (`409`) | 03, 06 | HU-013 | ✅ Q80: resuelta en RN-179 |
+| 65 | Documentos adicionales de la contratación o reescribir C14 | 06, 07, 09 | HU-012 | 🔵 Q81: rige su valor por defecto |
+| 66 | PDF obligatorio por cotización (Q28) | 03, 09 | HU-012 | 🔵 Q82: rige su valor por defecto |
+| 69 | Fila "Registrar proveedor" en la matriz y su test | 09 §6 / 07 | HU-012 | ✅ Q83: resuelta en matriz de permisos, fila H5 |
+| 70 | Aviso de éxito al volver de P-043 | 09 | HU-012 | 🔵 Q84: rige su valor por defecto |
+| 71 | Alcance de RN-153 ante el Administrator y nombre en RN-132 | 03, 06, 09 | HU-001 | 🔵 Q85: rige su valor por defecto |
+| 72 | RN-058 sin ceros a la izquierda | 03, 06 | HU-001 | 🔵 Q86: rige su valor por defecto |
+| 73 | Terminar o modificar vínculos y corregir unidades, o ADR + matrices R1 y R2 | 06, 09, ADR | HU-001 | 🔵 Q87: rige su valor por defecto |
+| 74 | RN-002 con invitaciones pendientes | 03, 06 | HU-001, HU-001B | 🔵 Q88: rige su valor por defecto |
+| 75 | RN de vínculos duplicados o superpuestos | 03, 06 | HU-001 | ✅ Q89: resuelta en RN-176 |
+| 77 | ADR del alta del personal de portería y hint en P-054 | ADR, 09 | HU-009 | 🔵 Q90: rige su valor por defecto |
+| 78 | El rol revocado vuelve solo por invitación | 03, 09 | HU-001B | 🔵 Q91: rige su valor por defecto |
+| 91 | `returnUrl` entre condominios y `condominiumId` ajeno | 09 | HU-003 | 🔵 Q92: rige su valor por defecto |
+| 92 | Sin cambio de condominio en sesión (confirmar en RN-064) | 03, 09 | — | 🔵 Q93: rige su valor por defecto |
+| 117 | Control de concurrencia de la cancelación | 07, 09 | HU-008 | 🔵 Q94: rige su valor por defecto |
+| 87, 89, 90, 93, 100, 101, 103, 113, 126, 128, 133, 137, 141, 142, 148, 153, 157, 159, 161, 162, 163, 166 | Decisiones Baja de reglas, textos o fichas (ver la tabla) | 03, 06, 07, 09 | Se resuelven al implementar la HU afectada | 🔵 Q95: rige la acción sugerida de cada fila |
 
-### ⏳ BACKLOG (tareas sugeridas)
 
-| ID sugerido | Tarea | Filas |
+### ⏳ BACKLOG (tareas creadas en 08-backlog.md el 2026-11-08)
+
+| ID | Tarea | Filas |
 |---|---|---|
 | **T-056** | Prototipo · personas y selector: `CH.init` sin cambio silencioso de persona; personas sin TOTP, con dos condominios, `anaBoard`, `pedro`, vínculo futuro, Owner vencido; Raúl, Ana y Rosa en los selectores de `403` | 20, 24, 43, 60, 106, 107, 116 |
 | **T-057** | Prototipo · acceso: contador de RN-111 compartido, códigos de recuperación únicos, condominio elegido en el `AppShell`, salida de P-003 | 15, 21, 25, 88 |
@@ -355,19 +355,23 @@
 
 | Archivo | Cambio |
 |---|---|
-| [10-validation-log.md](10-validation-log.md) | Creado: tabla consolidada (169 filas), decisiones y archivos |
+| [10-validation-log.md](10-validation-log.md) | Creado: tabla consolidada (169 filas), decisiones y archivos. Estado de §2 y §3 actualizado el 2026-11-08 |
 
-**Archivos del Spec Pack que se modificarían** (al aplicar las ✅ inmediatas y resolver las ⏳ PENDIENTE; los edita su agente dueño):
+**Archivos del Spec Pack modificados al aplicar las ✅ inmediatas y registrar o resolver las ⏳ PENDIENTE** (auditoría del Spec Finalizer, 2026-11-08):
 
-| Archivo | Qué cambia | Filas |
+| Archivo | Qué cambió | Filas |
 |---|---|---|
-| [03-reglas-de-negocio.md](03-reglas-de-negocio.md) | RN nuevas: rate limit de auth, idempotencia de gastos, concurrencia de decisiones, vínculos superpuestos, códigos del anfitrión. RN reescritas o ampliadas: RN-002, RN-035, RN-058, RN-064, RN-070, RN-084, RN-088, RN-092, RN-094, RN-095, RN-110, RN-111, RN-116, RN-122, RN-132, RN-142, RN-153, RN-164, RN-169, RN-170, RN-173. Cabecera y categorías | 16, 19, 26–28, 30, 31, 37, 46, 49, 52, 54, 55, 57, 58, 64, 71, 72, 74, 75, 78, 92, 93, 133, 137, 152, 153, 163, 168 |
-| [05-preguntas-abiertas.md](05-preguntas-abiertas.md) | Cerrar o actualizar Q18/Q21, Q25, Q27, Q28, Q30 y Q34 con lo que se decida | 40, 52, 53, 59, 63, 66, 128 |
-| [06-user-stories.md](06-user-stories.md) | Criterios nuevos o corregidos en HU-001, HU-001B, HU-002, HU-002B, HU-003B, HU-005, HU-006B, HU-008, HU-010, HU-010B, HU-011, HU-012, HU-013 y HU-014; marcar HU-005 C3/C8 y HU-001 C8 como criterios de API o integración | 17, 19, 26, 27, 30, 31, 33, 34, 37, 49, 50, 54, 58, 59, 64, 68, 71, 72, 74–76, 98, 127 |
-| [07-architecture.md](07-architecture.md) | TTL de la sesión parcial y tipo de sesión de P-007, `no-store` en portería, `nextStep` del enrolamiento, concurrencia de la cancelación, endpoint de documentos adicionales, permiso de registrar proveedor | 23, 45, 65, 69, 90, 117 |
-| [08-backlog.md](08-backlog.md) | Agregar T-056 a T-065 | Backlog |
-| [09-ui-spec.md](09-ui-spec.md) | Fichas de P-001 a P-007, P-010, P-011, P-012, P-013, P-016, P-020, P-030 a P-034, P-041 a P-043, P-050 a P-054, P-061; §3.0.3, §3.0.4, §3.0.5, §3.0.6; §6.4; matrices H3, R1, R2 y la fila de proveedores; F1, F5, F7, F8 | 18, 22, 23, 27, 30, 34, 41, 42, 44, 47, 49, 53, 65–67, 69, 70, 73, 77, 86, 94, 96, 99, 102, 122, 125–127, 130, 134, 136, 139, 147, 150, 151, 158, 160 |
-| ADR nuevos o ADR-0020 ([docs/adr/](docs/adr/)) | Procedimiento manual de contraseña y MFA, alta del personal de portería, alcance de la edición de vínculos y unidades, vínculo gasto–contratación | 18, 54, 73, 77 |
-| [prototypes/](prototypes/) | Ajustes de demostración (T-056 a T-062) y las ✅ inmediatas de P-013, P-031, P-034, P-043, P-053, P-060 y P-061 | Backlog y ✅ inmediatas |
+| [03-reglas-de-negocio.md](03-reglas-de-negocio.md) | RN nuevas: RN-176 (vínculos superpuestos), RN-177 (rate limit de auth), RN-178 (anfitrión del Administrator), RN-179 (decisiones concurrentes). RN-163 ampliada a gastos e invitados; RN-041 por Q25; RN-035 y RN-142 precisadas; cabecera y categorías | 19, 37, 50, 58, 59, 64, 75, 168 |
+| [05-preguntas-abiertas.md](05-preguntas-abiertas.md) | §9 con Q51 a Q95 (una por fila ⏳ PENDIENTE, con su valor por defecto) y Q25 resuelta | Todas las ⏳ PENDIENTE |
+| [06-user-stories.md](06-user-stories.md) | Criterios nuevos o corregidos en HU-001, HU-001B, HU-002, HU-003B, HU-004, HU-005, HU-006B, HU-010, HU-011, HU-012, HU-013 y HU-014 | 19, 33, 37, 50, 58, 59, 64, 68, 75, 76, 98, 127 |
+| [07-architecture.md](07-architecture.md) | Sesión parcial de 300 s, `no-store` en portería, `HIRE_DECISION_CONFLICT`, `AUTH_RATE_LIMITED`, catálogo §4.4, RT6 resuelta | 19, 23, 45, 59, 64 |
+| [08-backlog.md](08-backlog.md) | T-056 a T-065 creadas; T-066 a T-079 para pantallas y reglas | Backlog |
+| [09-ui-spec.md](09-ui-spec.md) | Correcciones inmediatas de las fichas y flujos, Q25 en P-040 y P-041, códigos nuevos en §3.0.6, §6 | 67, 68, 86, 94, 96, 99, 102, 122, 125, 127, 130, 134, 136, 139, 147, 150, 151, 158, 160 |
+| [docs/security/permissions-matrix.md](docs/security/permissions-matrix.md) | Fila H5 "Registrar proveedor" y visibilidad por estado en H3 | 59, 69 |
+| [prototypes/](prototypes/) | Inmediatas de P-013, P-031, P-034, P-042, P-043, P-053/P-054, P-060 y P-061 | 67, 110, 130, 139, 150, 151, 158, 160, 164, 165 |
+
+**Sigue pendiente:** los ADR que piden las filas 18, 54, 73 y 77 (procedimiento manual de contraseña y MFA, vínculo gasto–contratación, edición de vínculos y alta del personal de portería) no se escribieron. Mientras tanto rigen los valores por defecto de Q53, Q74, Q87 y Q90.
+
+**Nota sobre nombres:** las citas a `/api/suppliers`, `SUPPLIER_*` y `supplierId` de la tabla de §1 son históricas. El proveedor se llama `Vendor` en todo el Spec Pack (`/api/vendors`, `VENDOR_*`, `vendorId`).
 
 **Trazabilidad:** cada fila cita su origen como `VL-P0xx o.N` (sección "4. Observaciones" de esa revisión en el reporte del Agente Reviewer), `VL-P0xxr` (re-revisión), `Verif. Nx` (apéndice del verificador) o `Propia (Pn)`, con la evidencia de archivo y línea en la misma fila.
